@@ -1,10 +1,10 @@
-use super::replacer::{BufferPoolReplacer, BufferPoolReplacerError};
+use super::buffer_pool_replacer::{BufferPoolReplacerError, IBufferPoolReplacer};
 
 #[derive(Debug, PartialEq, Clone)]
 enum ClockReplacerPageStatus {
-    EMPTY,
-    UNTOUCHED,
-    ACCESSED,
+    Empty,
+    Untouched,
+    Accessed,
 }
 
 struct ClockReplacer {
@@ -19,12 +19,12 @@ impl ClockReplacer {
         ClockReplacer {
             size,
             clock_hand: 0,
-            page_status: vec![ClockReplacerPageStatus::EMPTY; size],
+            page_status: vec![ClockReplacerPageStatus::Empty; size],
         }
     }
 }
 
-impl BufferPoolReplacer for ClockReplacer {
+impl IBufferPoolReplacer for ClockReplacer {
     fn victim(&mut self) -> Result<Option<usize>, BufferPoolReplacerError> {
         let mut victim = None;
 
@@ -34,19 +34,19 @@ impl BufferPoolReplacer for ClockReplacer {
 
         while victim.is_none() {
             match self.page_status[self.clock_hand] {
-                ClockReplacerPageStatus::EMPTY => {}
-                ClockReplacerPageStatus::UNTOUCHED => {
+                ClockReplacerPageStatus::Empty => {}
+                ClockReplacerPageStatus::Untouched => {
                     victim = Some(self.clock_hand);
                 }
-                ClockReplacerPageStatus::ACCESSED => {
-                    self.page_status[self.clock_hand] = ClockReplacerPageStatus::UNTOUCHED;
+                ClockReplacerPageStatus::Accessed => {
+                    self.page_status[self.clock_hand] = ClockReplacerPageStatus::Untouched;
                 }
             }
             self.clock_hand = (self.clock_hand + 1) % self.size;
         }
 
         if let Some(idx) = victim {
-            self.page_status[idx] = ClockReplacerPageStatus::EMPTY;
+            self.page_status[idx] = ClockReplacerPageStatus::Empty;
         }
 
         Ok(victim)
@@ -60,7 +60,7 @@ impl BufferPoolReplacer for ClockReplacer {
             )));
         }
 
-        self.page_status[frame_id] = ClockReplacerPageStatus::EMPTY;
+        self.page_status[frame_id] = ClockReplacerPageStatus::Empty;
         Ok(())
     }
 
@@ -72,7 +72,7 @@ impl BufferPoolReplacer for ClockReplacer {
             )));
         }
 
-        self.page_status[frame_id] = ClockReplacerPageStatus::ACCESSED;
+        self.page_status[frame_id] = ClockReplacerPageStatus::Accessed;
         Ok(())
     }
 
@@ -81,7 +81,7 @@ impl BufferPoolReplacer for ClockReplacer {
             .page_status
             .iter()
             .map(|status| match status {
-                ClockReplacerPageStatus::EMPTY => 0,
+                ClockReplacerPageStatus::Empty => 0,
                 _ => 1,
             })
             .sum::<usize>())
@@ -96,33 +96,33 @@ mod tests {
     #[rstest]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
         ],
         2,
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty,
         ],
         2,
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::ACCESSED,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Accessed,
         ],
         3,
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
         ],
         0,
     )]
@@ -139,60 +139,60 @@ mod tests {
     #[rstest]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
         ],
         1,
         Ok(()),
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
         ],
         1,
         Ok(()),
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty,
         ],
         1,
         Ok(()),
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty,
         ],
         3,
         Err(BufferPoolReplacerError::FrameOutOfRange(format!(
             "frame_id 3 is out of range"
         ))),
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     fn test_unpin(
@@ -212,60 +212,60 @@ mod tests {
     #[rstest]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
         ],
         1,
         Ok(()),
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
         ],
         1,
         Ok(()),
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty,
         ],
         1,
         Ok(()),
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty,
         ],
         3,
         Err(BufferPoolReplacerError::FrameOutOfRange(format!(
             "frame_id 3 is out of range"
         ))),
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     fn test_pin(
@@ -285,62 +285,62 @@ mod tests {
     #[rstest]
     #[case(
         vec![
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Empty,
         ],
         Some(0),
         vec![
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
         ],
         None,
         vec![
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty
         ],
         Some(1),
         vec![
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty
         ],
     )]
     #[case(
         vec![
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::ACCESSED,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::ACCESSED
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Accessed,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Accessed
         ],
         Some(2),
         vec![
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::UNTOUCHED,
-            ClockReplacerPageStatus::EMPTY,
-            ClockReplacerPageStatus::ACCESSED
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Untouched,
+            ClockReplacerPageStatus::Empty,
+            ClockReplacerPageStatus::Accessed
         ],
     )]
     fn test_victim(

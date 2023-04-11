@@ -1,6 +1,8 @@
 # k2db
 
-My solutions to the projects set in [CMU's Intro to Database Systems Course](https://www.youtube.com/playlist?list=PLSE8ODhjZXjbohkNBWQs_otTrBTrjyohi) in Rust
+[![test](https://github.com/k2bd/k2db/actions/workflows/rust.yml/badge.svg)](https://github.com/k2bd/k2db/actions/workflows/rust.yml)
+
+My solutions to the projects set in [CMU's Intro to Database Systems Course](https://www.youtube.com/playlist?list=PLSE8ODhjZXjbohkNBWQs_otTrBTrjyohi) in Rust.
 
 The intention of this repo is for me to learn about database internals and DBMS development by following that CMU course, and to brush up on Rust.
 
@@ -8,7 +10,7 @@ The intention of this repo is for me to learn about database internals and DBMS 
 
 - [Project 1](https://15445.courses.cs.cmu.edu/fall2019/project1/)
   - [Task 1](src/dbms/buffer/replacer/clock_replacer.rs)
-  - [Task 2 (WIP)](src/dbms/buffer/pool_manager/pool_manager.rs)
+  - [Task 2 (WIP)](src/dbms/buffer/pool_manager/buffer_pool_manager.rs)
 
 
 ## Resources
