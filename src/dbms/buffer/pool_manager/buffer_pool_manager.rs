@@ -4,7 +4,7 @@ use mockall::automock;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::dbms::buffer::replacer::{IBufferPoolReplacer, BufferPoolReplacerError};
+use crate::dbms::buffer::replacer::{BufferPoolReplacerError, IBufferPoolReplacer};
 use crate::dbms::storage::disk::IDiskManager;
 
 pub enum BufferPoolManagerError {
@@ -64,7 +64,6 @@ impl IBufferPoolManager for BufferPoolManager {
                         pin_res.err().unwrap(),
                     ));
                 }
-
             }
         }
 
