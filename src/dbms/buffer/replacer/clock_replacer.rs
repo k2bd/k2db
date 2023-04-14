@@ -7,7 +7,7 @@ enum ClockReplacerPageStatus {
     Accessed,
 }
 
-struct ClockReplacer {
+pub struct ClockReplacer {
     size: usize,
     clock_hand: usize,
     page_status: Vec<ClockReplacerPageStatus>,
@@ -15,7 +15,7 @@ struct ClockReplacer {
 
 impl ClockReplacer {
     /// Creates a new [`ClockReplacer`].
-    fn new(size: usize) -> Self {
+    pub fn new(size: usize) -> Self {
         ClockReplacer {
             size,
             clock_hand: 0,

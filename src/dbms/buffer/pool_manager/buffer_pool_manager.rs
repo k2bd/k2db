@@ -6,6 +6,7 @@ use std::sync::RwLock;
 
 use crate::dbms::buffer::replacer::{BufferPoolReplacerError, IBufferPoolReplacer};
 use crate::dbms::storage::disk::IDiskManager;
+use crate::dbms::storage::page::IPage;
 
 pub enum BufferPoolManagerError {
     ReplacerError(BufferPoolReplacerError),
@@ -27,10 +28,11 @@ struct BufferPoolManager {
     /// page_id -> frame_id
     page_table: RwLock<HashMap<usize, usize>>,
     free_frames: RwLock<Vec<usize>>,
+    pages: Vec<Box<dyn IPage>>,
 }
 
 impl BufferPoolManager {
-    fn new(
+    pub fn new(
         pool_size: usize,
         replacer: Box<dyn IBufferPoolReplacer>,
         disk_manager: Box<dyn IDiskManager>,
