@@ -1,6 +1,7 @@
 # k2db
 
 [![test](https://github.com/k2bd/k2db/actions/workflows/test.yml/badge.svg)](https://github.com/k2bd/k2db/actions/workflows/test.yml)
+[![codecov](https://codecov.io/github/k2bd/k2db/branch/main/graph/badge.svg?token=382UJPD1KY)](https://codecov.io/github/k2bd/k2db)
 
 My solutions to the projects set in [CMU's Intro to Database Systems Course](https://www.youtube.com/playlist?list=PLSE8ODhjZXjbohkNBWQs_otTrBTrjyohi) in Rust.
 
