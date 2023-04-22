@@ -22,9 +22,13 @@ pub trait IPage {
     fn set_clean(&mut self) -> Result<(), PageError>;
     /// Increase the pin count of the page by 1
     fn increase_pin_count(&mut self) -> Result<(), PageError>;
+    /// Decrease the pin count of the page by 1
+    fn decrease_pin_count(&mut self) -> Result<(), PageError>;
     /// Get the pin count of the page
     fn get_pin_count(&self) -> Result<usize, PageError>;
-    /// Full overwrite page, e.g. when a new page is fetched from disk
+    /// Clear the page, e.g. when initialized as new
+    fn clear(&mut self) -> Result<(), PageError>;
+    /// Full overwrite page, e.g. when a page is fetched from disk
     fn overwrite(&mut self, page_id: Option<usize>, data: PageData) -> Result<(), PageError>;
 }
 
@@ -77,6 +81,13 @@ impl IPage for Page {
         Ok(())
     }
 
+    fn decrease_pin_count(&mut self) -> Result<(), PageError> {
+        if { self.pin_count > 0 } {
+            self.pin_count -= 1;
+        }
+        Ok(())
+    }
+
     fn get_pin_count(&self) -> Result<usize, PageError> {
         Ok(self.pin_count)
     }
@@ -87,6 +98,14 @@ impl IPage for Page {
     }
 
     fn set_clean(&mut self) -> Result<(), PageError> {
+        self.is_dirty = false;
+        Ok(())
+    }
+
+    fn clear(&mut self) -> Result<(), PageError> {
+        self.page_id = None;
+        self.data = [0; PAGE_SIZE];
+        self.pin_count = 0;
         self.is_dirty = false;
         Ok(())
     }
@@ -167,5 +186,55 @@ mod tests {
         let res2 = page.increase_pin_count();
         assert_eq!(res2, Ok(()));
         assert_eq!(page.get_pin_count().unwrap(), 2);
+    }
+
+    #[rstest]
+    fn test_decrease_pin_count() {
+        let mut page = Page::new(Some(0));
+        let _ = page.increase_pin_count();
+        let _ = page.increase_pin_count();
+
+        let res1 = page.decrease_pin_count();
+        assert_eq!(res1, Ok(()));
+        assert_eq!(page.get_pin_count().unwrap(), 1);
+        let res2 = page.decrease_pin_count();
+        assert_eq!(res2, Ok(()));
+        assert_eq!(page.get_pin_count().unwrap(), 0);
+        let res3 = page.decrease_pin_count();
+        assert_eq!(res3, Ok(()));
+        assert_eq!(page.get_pin_count().unwrap(), 0);
+    }
+
+    #[rstest]
+    fn test_overwrite() {
+        let mut page = Page::new(Some(0));
+        let _ = page.increase_pin_count();
+        let _ = page.increase_pin_count();
+        let _ = page.set_dirty();
+
+        let new_data = [1; PAGE_SIZE];
+        let res = page.overwrite(Some(123), new_data);
+        assert_eq!(res, Ok(()));
+
+        assert_eq!(page.get_page_id().unwrap(), Some(123));
+        assert_eq!(page.get_pin_count().unwrap(), 0);
+        assert_eq!(page.is_dirty().unwrap(), false);
+        assert_eq!(page.get_data().unwrap(), new_data);
+    }
+
+    #[rstest]
+    fn test_clear() {
+        let mut page = Page::new(Some(0));
+        let _ = page.increase_pin_count();
+        let _ = page.increase_pin_count();
+        let _ = page.set_dirty();
+
+        let res = page.clear();
+        assert_eq!(res, Ok(()));
+
+        assert_eq!(page.get_page_id().unwrap(), None);
+        assert_eq!(page.get_pin_count().unwrap(), 0);
+        assert_eq!(page.is_dirty().unwrap(), false);
+        assert_eq!(page.get_data().unwrap(), [0; PAGE_SIZE]);
     }
 }
