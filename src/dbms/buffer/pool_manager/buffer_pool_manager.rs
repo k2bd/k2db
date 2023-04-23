@@ -97,17 +97,10 @@ impl BufferPoolManager {
         if let Some(f) = free_frames.pop() {
             Ok(f)
         } else {
-            let victim_res = replacer.victim();
-            if let Ok(victim) = victim_res {
-                if let Some(frame) = victim {
-                    Ok(frame)
-                } else {
-                    Err(BufferPoolManagerError::NoFrameAvailable)
-                }
+            if let Some(frame) = replacer.victim()? {
+                Ok(frame)
             } else {
-                Err(BufferPoolManagerError::ReplacerError(
-                    victim_res.unwrap_err(),
-                ))
+                Err(BufferPoolManagerError::NoFrameAvailable)
             }
         }
     }
@@ -331,12 +324,9 @@ impl IBufferPoolManager for BufferPoolManager {
             page.clear()?;
 
             free_frames.push(frame_id);
-
-            Ok(())
-        } else {
-            // 1.   If P does not exist, return true.
-            Err(BufferPoolManagerError::PageNotInPool)
         }
+
+        Ok(())
     }
 
     fn flush_all_pages(&self) -> Result<(), BufferPoolManagerError> {
