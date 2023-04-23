@@ -18,6 +18,24 @@ pub enum BufferPoolManagerError {
     DiskManagerError(DiskManagerError),
 }
 
+impl From<BufferPoolReplacerError> for BufferPoolManagerError {
+    fn from(e: BufferPoolReplacerError) -> Self {
+        Self::ReplacerError(e)
+    }
+}
+
+impl From<PageError> for BufferPoolManagerError {
+    fn from(e: PageError) -> Self {
+        Self::PageError(e)
+    }
+}
+
+impl From<DiskManagerError> for BufferPoolManagerError {
+    fn from(e: DiskManagerError) -> Self {
+        Self::DiskManagerError(e)
+    }
+}
+
 type ReadOnlyPage<'a> = RwLockReadGuard<'a, Box<dyn IPage>>;
 type WritablePage<'a> = RwLockWriteGuard<'a, Box<dyn IPage>>;
 
@@ -100,10 +118,7 @@ impl BufferPoolManager {
         page: &mut RwLockWriteGuard<Box<dyn IPage>>,
         disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager>>,
     ) -> Result<(), BufferPoolManagerError> {
-        let page_dirty = match page.is_dirty() {
-            Ok(d) => d,
-            Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-        };
+        let page_dirty = page.is_dirty()?;
         let page_id = match page.get_page_id() {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(()), // TODO: revisit
@@ -111,18 +126,9 @@ impl BufferPoolManager {
         };
 
         if page_dirty {
-            let page_data = match page.get_data() {
-                Ok(d) => d,
-                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-            };
-            match disk_manager.write_page(page_id, &page_data) {
-                Ok(_) => {}
-                Err(e) => return Err(BufferPoolManagerError::DiskManagerError(e)),
-            };
-            match page.set_clean() {
-                Ok(_) => {}
-                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-            };
+            let page_data = page.get_data()?;
+            disk_manager.write_page(page_id, &page_data)?;
+            page.set_clean()?;
         }
 
         Ok(())
@@ -139,19 +145,13 @@ impl BufferPoolManager {
         page: &mut RwLockWriteGuard<Box<dyn IPage>>,
     ) -> Result<(), BufferPoolManagerError> {
         if let Some(old_page_id) = page.get_page_id().unwrap() {
-            match self.write_if_dirty(page, disk_manager) {
-                Ok(_) => {}
-                Err(e) => return Err(e),
-            };
+            self.write_if_dirty(page, disk_manager)?;
 
             page_table.remove(&old_page_id);
             page_table.insert(new_page_id, frame_id);
         }
 
-        match replacer.pin(frame_id) {
-            Ok(_) => {}
-            Err(e) => return Err(BufferPoolManagerError::ReplacerError(e)),
-        };
+        replacer.pin(frame_id)?;
 
         Ok(())
     }
@@ -183,27 +183,17 @@ impl BufferPoolManager {
             // 2.     If R is dirty, write it back to the disk.
             // 3.     Delete R from the page table and insert P.
             // 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
-            match self.swap_frame(
+            self.swap_frame(
                 new_frame_id,
                 page_id,
                 &mut disk_manager,
                 &mut replacer,
                 &mut page_table,
                 &mut page_to_overwrite,
-            ) {
-                Ok(_) => {}
-                Err(e) => return Err(e),
-            };
+            )?;
 
-            let new_data_res = disk_manager.read_page(page_id);
-            match new_data_res {
-                Ok(new_page_data) => {
-                    page_to_overwrite
-                        .overwrite(Some(page_id), new_page_data)
-                        .unwrap();
-                }
-                Err(e) => return Err(BufferPoolManagerError::DiskManagerError(e)),
-            }
+            let new_page_data = disk_manager.read_page(page_id)?;
+            page_to_overwrite.overwrite(Some(page_id), new_page_data)?;
         }
 
         Ok(new_frame_id)
@@ -225,17 +215,13 @@ impl BufferPoolManager {
 
 impl IBufferPoolManager for BufferPoolManager {
     fn fetch_page(&self, page_id: usize) -> Result<ReadOnlyPage, BufferPoolManagerError> {
-        match self.fetch_page_frame(page_id) {
-            Ok(frame_id) => Ok(self.pages[frame_id].read().unwrap()),
-            Err(e) => Err(e),
-        }
+        let frame_id = self.fetch_page_frame(page_id)?;
+        Ok(self.pages[frame_id].read().unwrap())
     }
 
     fn fetch_page_writable(&self, page_id: usize) -> Result<WritablePage, BufferPoolManagerError> {
-        match self.fetch_page_frame(page_id) {
-            Ok(frame_id) => Ok(self.pages[frame_id].write().unwrap()),
-            Err(e) => Err(e),
-        }
+        let frame_id = self.fetch_page_frame(page_id)?;
+        Ok(self.pages[frame_id].write().unwrap())
     }
 
     fn new_page(&self) -> Result<Option<WritablePage>, BufferPoolManagerError> {
@@ -255,39 +241,24 @@ impl IBufferPoolManager for BufferPoolManager {
         };
 
         // 0.   Make sure you call DiskManager::AllocatePage!
-        let new_page_id = match disk_manager.allocate_page() {
-            Ok(page_id) => page_id,
-            Err(e) => return Err(BufferPoolManagerError::DiskManagerError(e)),
-        };
+        let new_page_id = disk_manager.allocate_page()?;
 
         // 2.   Pick a victim page P from either the free list or the replacer. Always pick from the free list first.
         let frame_id = self.get_freeable_frame_id(&mut replacer).unwrap();
         let mut page_to_overwrite = self.pages[frame_id].write().unwrap();
-        match self.swap_frame(
+        self.swap_frame(
             frame_id,
             new_page_id,
             &mut disk_manager,
             &mut replacer,
             &mut page_table,
             &mut page_to_overwrite,
-        ) {
-            Ok(_) => {}
-            Err(e) => return Err(e),
-        };
+        )?;
 
         // 3.   Update P's metadata, zero out memory and add P to the page table.
-        match page_to_overwrite.clear() {
-            Ok(_) => {}
-            Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-        }
-        match page_to_overwrite.increase_pin_count() {
-            Ok(_) => {}
-            Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-        }
-        match replacer.pin(frame_id) {
-            Ok(_) => {}
-            Err(e) => return Err(BufferPoolManagerError::ReplacerError(e)),
-        }
+        page_to_overwrite.clear()?;
+        page_to_overwrite.increase_pin_count()?;
+        replacer.pin(frame_id)?;
 
         // 4.   Set the page ID output parameter. Return a pointer to P.
         Ok(Some(page_to_overwrite))
@@ -300,13 +271,13 @@ impl IBufferPoolManager for BufferPoolManager {
         if let Some(&frame_id) = page_table.get(&page_id) {
             let mut page = self.pages[frame_id].write().unwrap();
 
-            page.decrease_pin_count().unwrap();
+            page.decrease_pin_count()?;
             if mark_dirty {
-                page.set_dirty().unwrap();
+                page.set_dirty()?;
             }
 
-            if page.get_pin_count().unwrap() == 0 {
-                replacer.unpin(frame_id).unwrap();
+            if page.get_pin_count()? == 0 {
+                replacer.unpin(frame_id)?;
             }
 
             Ok(())
@@ -322,20 +293,10 @@ impl IBufferPoolManager for BufferPoolManager {
         if let Some(&frame_id) = page_table.get(&page_id) {
             let mut page = self.pages[frame_id].write().unwrap();
 
-            match page.get_data() {
-                Ok(data) => {
-                    match disk_manager.write_page(page_id, &data) {
-                        Ok(_) => {}
-                        Err(e) => return Err(BufferPoolManagerError::DiskManagerError(e)),
-                    };
-                }
-                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-            };
+            let data = page.get_data()?;
+            disk_manager.write_page(page_id, &data)?;
 
-            match page.set_clean() {
-                Ok(_) => {}
-                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-            };
+            page.set_clean()?;
 
             Ok(())
         } else {
@@ -360,23 +321,14 @@ impl IBufferPoolManager for BufferPoolManager {
             };
 
             // 3.   Otherwise, P can be deleted. Remove P from the page table, reset its metadata and return it to the free list.
-            match self.write_if_dirty(&mut page, &mut disk_manager) {
-                Ok(_) => {}
-                Err(e) => return Err(e),
-            };
+            self.write_if_dirty(&mut page, &mut disk_manager)?;
 
             page_table.remove(&page_id);
 
             // 0.   Make sure you call DiskManager::DeallocatePage!
-            match disk_manager.deallocate_page(page_id) {
-                Ok(_) => {}
-                Err(e) => return Err(BufferPoolManagerError::DiskManagerError(e)),
-            };
+            disk_manager.deallocate_page(page_id)?;
 
-            match page.clear() {
-                Ok(_) => {}
-                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-            };
+            page.clear()?;
 
             free_frames.push(frame_id);
 
@@ -396,10 +348,7 @@ impl IBufferPoolManager for BufferPoolManager {
             .collect::<Vec<_>>();
 
         for page in pages.iter_mut() {
-            match self.write_if_dirty(page, &mut self.disk_manager.write().unwrap()) {
-                Ok(_) => {}
-                Err(e) => return Err(e),
-            };
+            self.write_if_dirty(page, &mut self.disk_manager.write().unwrap())?;
         }
 
         Ok(())
