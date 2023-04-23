@@ -60,11 +60,11 @@ struct BufferPoolManager {
     replacer: Arc<RwLock<Box<dyn IBufferPoolReplacer>>>,
     disk_manager: Arc<RwLock<Box<dyn IDiskManager>>>,
     /// page_id -> frame_id
-    // Concurrent mutability on the hashmap
+    // Latch on the whole hashmap
     page_table: Arc<RwLock<HashMap<usize, usize>>>,
-    // N.B. Concurrent mutability on the array
+    // N.B. Latch on the whole array
     free_frames: Arc<RwLock<Vec<usize>>>,
-    // N.B. Concurrent mutability on each individual page, not the array itself
+    // N.B. Latch on each individual page, not the array itself
     pages: Arc<Vec<RwLock<Box<dyn IPage>>>>,
 }
 
