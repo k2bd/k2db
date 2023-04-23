@@ -82,7 +82,7 @@ impl IPage for Page {
     }
 
     fn decrease_pin_count(&mut self) -> Result<(), PageError> {
-        if { self.pin_count > 0 } {
+        if self.pin_count > 0 {
             self.pin_count -= 1;
         }
         Ok(())

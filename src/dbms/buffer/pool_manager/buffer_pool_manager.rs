@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::dbms::buffer::replacer::{BufferPoolReplacerError, IBufferPoolReplacer};
 use crate::dbms::storage::disk::{DiskManagerError, IDiskManager};
-use crate::dbms::storage::page::{IPage, Page, PageData, PageError};
+use crate::dbms::storage::page::{IPage, Page, PageError};
 
 #[derive(Debug)]
 pub enum BufferPoolManagerError {
@@ -11,6 +11,8 @@ pub enum BufferPoolManagerError {
     NoFrameAvailable,
     /// The requested page is not in the buffer pool
     PageNotInPool,
+    /// A page is in use, e.g. when it's trying to be deleted
+    PageInUse,
     ReplacerError(BufferPoolReplacerError),
     PageError(PageError),
     DiskManagerError(DiskManagerError),
@@ -92,34 +94,64 @@ impl BufferPoolManager {
         }
     }
 
-    /// Flush a page to disk and prep it for a new page
+    /// Write a page to disk if it's dirty
+    fn write_if_dirty(
+        &self,
+        page: &mut RwLockWriteGuard<Box<dyn IPage>>,
+        disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager>>,
+    ) -> Result<(), BufferPoolManagerError> {
+        let page_dirty = match page.is_dirty() {
+            Ok(d) => d,
+            Err(e) => return Err(BufferPoolManagerError::PageError(e)),
+        };
+        let page_id = match page.get_page_id() {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(()), // TODO: revisit
+            Err(e) => return Err(BufferPoolManagerError::PageError(e)),
+        };
+
+        if page_dirty {
+            let page_data = match page.get_data() {
+                Ok(d) => d,
+                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
+            };
+            match disk_manager.write_page(page_id, &page_data) {
+                Ok(_) => {}
+                Err(e) => return Err(BufferPoolManagerError::DiskManagerError(e)),
+            };
+            match page.set_clean() {
+                Ok(_) => {}
+                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
+            };
+        }
+
+        Ok(())
+    }
+
+    /// Flush a frame to disk and prep it for a new page
     fn swap_frame(
         &self,
         frame_id: usize,
-        page_id: usize,
+        new_page_id: usize,
         disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager>>,
         replacer: &mut RwLockWriteGuard<Box<dyn IBufferPoolReplacer>>,
         page_table: &mut RwLockWriteGuard<HashMap<usize, usize>>,
         page: &mut RwLockWriteGuard<Box<dyn IPage>>,
     ) -> Result<(), BufferPoolManagerError> {
         if let Some(old_page_id) = page.get_page_id().unwrap() {
-            if page.is_dirty().unwrap() {
-                let page_data = page.get_data().unwrap();
-
-                let res = disk_manager.write_page(old_page_id, &page_data);
-                if let Err(e) = res {
-                    return Err(BufferPoolManagerError::DiskManagerError(e));
-                }
-            }
+            match self.write_if_dirty(page, disk_manager) {
+                Ok(_) => {}
+                Err(e) => return Err(e),
+            };
 
             page_table.remove(&old_page_id);
-            page_table.insert(page_id, frame_id);
+            page_table.insert(new_page_id, frame_id);
         }
 
-        let new_frame_pin_res = replacer.pin(frame_id);
-        if let Err(e) = new_frame_pin_res {
-            return Err(BufferPoolManagerError::ReplacerError(e));
-        }
+        match replacer.pin(frame_id) {
+            Ok(_) => {}
+            Err(e) => return Err(BufferPoolManagerError::ReplacerError(e)),
+        };
 
         Ok(())
     }
@@ -290,31 +322,86 @@ impl IBufferPoolManager for BufferPoolManager {
         if let Some(&frame_id) = page_table.get(&page_id) {
             let mut page = self.pages[frame_id].write().unwrap();
 
-            let page_data = page.get_data();
-            match page_data {
+            match page.get_data() {
                 Ok(data) => {
-                    let res = disk_manager.write_page(page_id, &data);
-                    if let Err(e) = res {
-                        return Err(BufferPoolManagerError::DiskManagerError(e));
-                    }
+                    match disk_manager.write_page(page_id, &data) {
+                        Ok(_) => {}
+                        Err(e) => return Err(BufferPoolManagerError::DiskManagerError(e)),
+                    };
                 }
                 Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-            }
+            };
 
             match page.set_clean() {
-                Ok(_) => Ok(()),
-                Err(e) => Err(BufferPoolManagerError::PageError(e)),
-            }
+                Ok(_) => {}
+                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
+            };
+
+            Ok(())
         } else {
             Err(BufferPoolManagerError::PageNotInPool)
         }
     }
 
     fn delete_page(&self, page_id: usize) -> Result<(), BufferPoolManagerError> {
-        todo!()
+        let mut page_table = self.page_table.write().unwrap();
+        let mut disk_manager = self.disk_manager.write().unwrap();
+        let mut free_frames = self.free_frames.write().unwrap();
+
+        // 1.   Search the page table for the requested page (P).
+        if let Some(&frame_id) = page_table.get(&page_id) {
+            let mut page = self.pages[frame_id].write().unwrap();
+
+            // 2.   If P exists, but has a non-zero pin-count, return false. Someone is using the page.
+            match page.get_pin_count() {
+                Ok(0) => return Err(BufferPoolManagerError::PageInUse),
+                Ok(_) => {}
+                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
+            };
+
+            // 3.   Otherwise, P can be deleted. Remove P from the page table, reset its metadata and return it to the free list.
+            match self.write_if_dirty(&mut page, &mut disk_manager) {
+                Ok(_) => {}
+                Err(e) => return Err(e),
+            };
+
+            page_table.remove(&page_id);
+
+            // 0.   Make sure you call DiskManager::DeallocatePage!
+            match disk_manager.deallocate_page(page_id) {
+                Ok(_) => {}
+                Err(e) => return Err(BufferPoolManagerError::DiskManagerError(e)),
+            };
+
+            match page.clear() {
+                Ok(_) => {}
+                Err(e) => return Err(BufferPoolManagerError::PageError(e)),
+            };
+
+            free_frames.push(frame_id);
+
+            Ok(())
+        } else {
+            // 1.   If P does not exist, return true.
+            Err(BufferPoolManagerError::PageNotInPool)
+        }
     }
 
     fn flush_all_pages(&self) -> Result<(), BufferPoolManagerError> {
-        todo!()
+        // Obtain the write latch on all pages
+        let mut pages = self
+            .pages
+            .iter()
+            .map(|page| page.write().unwrap())
+            .collect::<Vec<_>>();
+
+        for page in pages.iter_mut() {
+            match self.write_if_dirty(page, &mut self.disk_manager.write().unwrap()) {
+                Ok(_) => {}
+                Err(e) => return Err(e),
+            };
+        }
+
+        Ok(())
     }
 }
