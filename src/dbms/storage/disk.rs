@@ -1,4 +1,4 @@
 mod disk_manager;
-mod testing;
+pub mod testing;
 
 pub use disk_manager::*;

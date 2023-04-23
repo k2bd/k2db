@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::dbms::buffer::replacer::{BufferPoolReplacerError, IBufferPoolReplacer};
 use crate::dbms::storage::disk::{DiskManagerError, IDiskManager};
-use crate::dbms::storage::page::{IPage, Page, PageError};
+use crate::dbms::storage::page::{IPage, Page, PageError, PAGE_SIZE};
 
 #[derive(Debug)]
 pub enum BufferPoolManagerError {
@@ -72,12 +72,12 @@ impl BufferPoolManager {
     #[allow(dead_code)]
     fn new(
         pool_size: usize,
-        replacer: Arc<RwLock<Box<dyn IBufferPoolReplacer>>>,
-        disk_manager: Arc<RwLock<Box<dyn IDiskManager>>>,
+        replacer: Box<dyn IBufferPoolReplacer>,
+        disk_manager: Box<dyn IDiskManager>,
     ) -> BufferPoolManager {
         BufferPoolManager {
-            replacer,
-            disk_manager,
+            replacer: Arc::new(RwLock::new(replacer)),
+            disk_manager: Arc::new(RwLock::new(disk_manager)),
             page_table: Arc::new(RwLock::new(HashMap::new())),
             // All frames are free
             free_frames: Arc::new(RwLock::new((0..pool_size).collect())),
@@ -141,9 +141,9 @@ impl BufferPoolManager {
             self.write_if_dirty(page, disk_manager)?;
 
             page_table.remove(&old_page_id);
-            page_table.insert(new_page_id, frame_id);
         }
 
+        page_table.insert(new_page_id, frame_id);
         replacer.pin(frame_id)?;
 
         Ok(())
@@ -191,19 +191,6 @@ impl BufferPoolManager {
 
         Ok(new_frame_id)
     }
-
-    fn find_matching_page(
-        &self,
-        predicate: impl Fn(&dyn IPage) -> bool,
-    ) -> Result<Option<usize>, BufferPoolManagerError> {
-        for (page_id, frame_id) in self.page_table.read().unwrap().iter() {
-            let page = self.pages[*frame_id].read().unwrap();
-            if predicate(page.as_ref()) {
-                return Ok(Some(*page_id));
-            }
-        }
-        Ok(None)
-    }
 }
 
 impl IBufferPoolManager for BufferPoolManager {
@@ -223,14 +210,17 @@ impl IBufferPoolManager for BufferPoolManager {
         let mut replacer = self.replacer.write().unwrap();
 
         // 1.   If all the pages in the buffer pool are pinned, return nullptr.
-        match self.find_matching_page(|page| page.get_pin_count() == Ok(0)) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return Ok(None);
-            }
-            Err(e) => {
-                return Err(e);
-            }
+        {
+            let pinless_page = self
+                .pages
+                .iter()
+                .find(|page| page.read().unwrap().get_pin_count().unwrap() == 0);
+            match pinless_page {
+                Some(_) => {}
+                None => {
+                    return Ok(None);
+                }
+            };
         };
 
         // 0.   Make sure you call DiskManager::AllocatePage!
@@ -249,7 +239,7 @@ impl IBufferPoolManager for BufferPoolManager {
         )?;
 
         // 3.   Update P's metadata, zero out memory and add P to the page table.
-        page_to_overwrite.clear()?;
+        page_to_overwrite.overwrite(Some(new_page_id), [0; PAGE_SIZE])?;
         page_to_overwrite.increase_pin_count()?;
         replacer.pin(frame_id)?;
 
@@ -308,8 +298,8 @@ impl IBufferPoolManager for BufferPoolManager {
 
             // 2.   If P exists, but has a non-zero pin-count, return false. Someone is using the page.
             match page.get_pin_count() {
-                Ok(0) => return Err(BufferPoolManagerError::PageInUse),
-                Ok(_) => {}
+                Ok(0) => {}
+                Ok(_) => return Err(BufferPoolManagerError::PageInUse),
                 Err(e) => return Err(BufferPoolManagerError::PageError(e)),
             };
 
@@ -343,5 +333,66 @@ impl IBufferPoolManager for BufferPoolManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dbms::buffer::replacer::clock_replacer::ClockReplacer;
+    use crate::dbms::storage::disk::testing::InMemoryDiskManager;
+    use rstest::*;
+
+    #[rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(3)]
+    #[case(10)]
+    fn test_new_page(#[case] pool_size: usize) {
+        let disk_manager = InMemoryDiskManager::new();
+        let replacer = ClockReplacer::new(pool_size);
+        let buffer_pool_manager =
+            BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager));
+
+        for _ in 0..pool_size {
+            let page = buffer_pool_manager.new_page().unwrap();
+            assert!(page.is_some());
+        }
+
+        let page = buffer_pool_manager.new_page().unwrap();
+        assert!(page.is_none());
+    }
+
+    #[rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(3)]
+    #[case(10)]
+    fn test_delete_page(#[case] pool_size: usize) {
+        let disk_manager = InMemoryDiskManager::new();
+        let replacer = ClockReplacer::new(pool_size);
+        let buffer_pool_manager =
+            BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager));
+
+        let mut page_ids = Vec::<usize>::new();
+
+        for _ in 0..pool_size {
+            let page = buffer_pool_manager.new_page().unwrap();
+            assert!(page.is_some());
+            page_ids.push(page.unwrap().get_page_id().unwrap().unwrap());
+        }
+
+        let page = buffer_pool_manager.new_page().unwrap();
+        assert!(page.is_none());
+
+        for page_id in page_ids {
+            buffer_pool_manager.unpin_page(page_id, false).unwrap();
+            buffer_pool_manager.delete_page(page_id).unwrap();
+        }
+
+        for _ in 0..pool_size {
+            let page = buffer_pool_manager.new_page().unwrap();
+            assert!(page.is_some());
+        }
     }
 }
