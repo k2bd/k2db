@@ -100,6 +100,14 @@ mod tests {
     }
 
     #[rstest]
+    fn test_read_page_nonexistent() {
+        let mut disk_manager = InMemoryDiskManager::new();
+        let page_id = disk_manager.allocate_page().unwrap();
+        let result = disk_manager.read_page(page_id + 1);
+        assert!(result.is_err());
+    }
+
+    #[rstest]
     fn test_allocate_page() {
         let mut disk_manager = InMemoryDiskManager::new();
         let page_id = disk_manager.allocate_page().unwrap();
