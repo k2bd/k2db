@@ -53,7 +53,7 @@ impl Page {
 
 impl IPage for Page {
     fn get_data(&self) -> Result<PageData, PageError> {
-        Ok(self.data.clone())
+        Ok(self.data)
     }
 
     fn set_data(&mut self, data: PageData) -> Result<(), PageError> {

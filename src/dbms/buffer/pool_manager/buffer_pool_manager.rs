@@ -69,6 +69,7 @@ struct BufferPoolManager {
 }
 
 impl BufferPoolManager {
+    #[allow(dead_code)]
     fn new(
         pool_size: usize,
         replacer: Arc<RwLock<Box<dyn IBufferPoolReplacer>>>,
@@ -95,13 +96,12 @@ impl BufferPoolManager {
     ) -> Result<usize, BufferPoolManagerError> {
         let mut free_frames = self.free_frames.write().unwrap();
         if let Some(f) = free_frames.pop() {
-            Ok(f)
+            return Ok(f);
+        }
+        if let Some(frame) = replacer.victim()? {
+            Ok(frame)
         } else {
-            if let Some(frame) = replacer.victim()? {
-                Ok(frame)
-            } else {
-                Err(BufferPoolManagerError::NoFrameAvailable)
-            }
+            Err(BufferPoolManagerError::NoFrameAvailable)
         }
     }
 
@@ -330,6 +330,7 @@ impl IBufferPoolManager for BufferPoolManager {
     }
 
     fn flush_all_pages(&self) -> Result<(), BufferPoolManagerError> {
+        let mut disk_manager = self.disk_manager.write().unwrap();
         // Obtain the write latch on all pages
         let mut pages = self
             .pages
@@ -338,7 +339,7 @@ impl IBufferPoolManager for BufferPoolManager {
             .collect::<Vec<_>>();
 
         for page in pages.iter_mut() {
-            self.write_if_dirty(page, &mut self.disk_manager.write().unwrap())?;
+            self.write_if_dirty(page, &mut disk_manager)?;
         }
 
         Ok(())

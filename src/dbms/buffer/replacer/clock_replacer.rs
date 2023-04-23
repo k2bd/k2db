@@ -14,6 +14,7 @@ pub struct ClockReplacer {
 
 impl ClockReplacer {
     /// Creates a new [`ClockReplacer`].
+    #[allow(dead_code)]
     pub fn new(size: usize) -> Self {
         ClockReplacer {
             clock_hand: 0,
