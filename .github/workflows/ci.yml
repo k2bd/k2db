@@ -1,8 +1,32 @@
+name: CI Checks
+
 on: [push]
 
-name: Check and Lint
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
+  test:
+    # See https://github.com/xd009642/tarpaulin
+    name: Test
+    runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Run tests with coverage
+        run: |
+          cargo +nightly tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          fail_ci_if_error: true
+
+  # See https://github.com/BamPeers/rust-ci-github-actions-workflow/blob/main/.github/workflows/check-and-lint.yaml
   check:
     name: Check
     runs-on: ubuntu-latest
