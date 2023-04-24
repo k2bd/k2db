@@ -210,10 +210,6 @@ impl IBufferPoolManager for BufferPoolManager {
     }
 
     fn new_page(&self) -> Result<Option<WritablePage>, BufferPoolManagerError> {
-        let mut page_table = self.page_table.write().unwrap();
-        let mut disk_manager = self.disk_manager.write().unwrap();
-        let mut replacer = self.replacer.write().unwrap();
-
         // 1.   If all the pages in the buffer pool are pinned, return nullptr.
         {
             let pinless_page = self
@@ -227,6 +223,10 @@ impl IBufferPoolManager for BufferPoolManager {
                 }
             };
         };
+
+        let mut disk_manager = self.disk_manager.write().unwrap();
+        let mut page_table = self.page_table.write().unwrap();
+        let mut replacer = self.replacer.write().unwrap();
 
         // 0.   Make sure you call DiskManager::AllocatePage!
         let new_page_id = disk_manager.allocate_page()?;
@@ -275,8 +275,8 @@ impl IBufferPoolManager for BufferPoolManager {
     }
 
     fn flush_page(&self, page_id: usize) -> Result<(), BufferPoolManagerError> {
-        let page_table = self.page_table.read().unwrap();
         let mut disk_manager = self.disk_manager.write().unwrap();
+        let page_table = self.page_table.read().unwrap();
 
         if let Some(&frame_id) = page_table.get(&page_id) {
             let mut page = self.pages[frame_id].write().unwrap();
@@ -293,9 +293,9 @@ impl IBufferPoolManager for BufferPoolManager {
     }
 
     fn delete_page(&self, page_id: usize) -> Result<(), BufferPoolManagerError> {
-        let mut page_table = self.page_table.write().unwrap();
         let mut disk_manager = self.disk_manager.write().unwrap();
         let mut free_frames = self.free_frames.write().unwrap();
+        let mut page_table = self.page_table.write().unwrap();
 
         // 1.   Search the page table for the requested page (P).
         if let Some(&frame_id) = page_table.get(&page_id) {
@@ -348,16 +348,19 @@ mod tests {
     use crate::dbms::storage::disk::testing::InMemoryDiskManager;
     use rstest::*;
 
+    fn create_testing_pool_manager(pool_size: usize) -> BufferPoolManager {
+        let disk_manager = InMemoryDiskManager::new();
+        let replacer = ClockReplacer::new(pool_size);
+        BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager))
+    }
+
     #[rstest]
     #[case(1)]
     #[case(2)]
     #[case(3)]
     #[case(10)]
     fn test_new_page(#[case] pool_size: usize) {
-        let disk_manager = InMemoryDiskManager::new();
-        let replacer = ClockReplacer::new(pool_size);
-        let buffer_pool_manager =
-            BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager));
+        let buffer_pool_manager = create_testing_pool_manager(pool_size);
 
         for _ in 0..pool_size {
             let page = buffer_pool_manager.new_page().unwrap();
@@ -370,11 +373,7 @@ mod tests {
 
     #[rstest]
     fn test_new_pages_threaded() {
-        let pool_size = 100;
-        let disk_manager = InMemoryDiskManager::new();
-        let replacer = ClockReplacer::new(pool_size);
-        let buffer_pool_manager =
-            BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager));
+        let buffer_pool_manager = create_testing_pool_manager(100);
 
         let mut threads = Vec::new();
         for _ in 0..10 {
@@ -398,15 +397,56 @@ mod tests {
     }
 
     #[rstest]
+    fn test_create_and_use_lots_of_pages_threaded() {
+        // Create loads of pages in different threads, write some data to them,
+        // flush them all to disk, and then unpin them.#
+        // Create many more pages than the buffer pool can hold so that we can
+        // test the replacer and the disk manager.
+        let buffer_pool_manager = create_testing_pool_manager(10);
+
+        let mut threads = Vec::new();
+
+        for _ in 0..10 {
+            let buffer_pool_manager = buffer_pool_manager.clone();
+            threads.push(std::thread::spawn(move || {
+                for _ in 0..100 {
+                    let page_id: usize;
+                    {
+                        let mut page = buffer_pool_manager.new_page().unwrap().unwrap();
+                        page_id = page.get_page_id().unwrap().unwrap();
+
+                        page.write_data(123, &[100]).unwrap();
+                    }
+                    buffer_pool_manager.unpin_page(page_id, false).unwrap();
+                }
+            }));
+        }
+
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        // Now we should have 1000 pages in the buffer pool with the data 100
+        // written at position 123.
+        for page_id in 0..1000 {
+            {
+                let page = buffer_pool_manager.fetch_page(page_id);
+                assert!(page.is_ok());
+                let page = page.unwrap();
+                let page_data = page.get_data().unwrap();
+                assert_eq!(page_data[123], 100);
+            }
+            buffer_pool_manager.unpin_page(page_id, false).unwrap();
+        }
+    }
+
+    #[rstest]
     #[case(1)]
     #[case(2)]
     #[case(3)]
     #[case(10)]
     fn test_delete_page(#[case] pool_size: usize) {
-        let disk_manager = InMemoryDiskManager::new();
-        let replacer = ClockReplacer::new(pool_size);
-        let buffer_pool_manager =
-            BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager));
+        let buffer_pool_manager = create_testing_pool_manager(pool_size);
 
         let mut page_ids = Vec::<usize>::new();
 
@@ -432,10 +472,7 @@ mod tests {
 
     #[rstest]
     fn test_fetch_page() {
-        let disk_manager = InMemoryDiskManager::new();
-        let replacer = ClockReplacer::new(10);
-        let buffer_pool_manager =
-            BufferPoolManager::new(10, Box::new(replacer), Box::new(disk_manager));
+        let buffer_pool_manager = create_testing_pool_manager(10);
 
         let page = buffer_pool_manager.fetch_page(0);
         assert!(page.is_err());
@@ -447,5 +484,50 @@ mod tests {
 
         let page = buffer_pool_manager.fetch_page(page_id);
         assert!(page.is_ok());
+    }
+
+    #[rstest]
+    fn test_fetch_page_writable() {
+        let buffer_pool_manager = create_testing_pool_manager(10);
+
+        let page = buffer_pool_manager.fetch_page_writable(0);
+        assert!(page.is_err());
+
+        let page = buffer_pool_manager.new_page().unwrap();
+        assert!(page.is_some());
+        let page_id = page.unwrap().get_page_id().unwrap().unwrap();
+        buffer_pool_manager.unpin_page(page_id, false).unwrap();
+
+        let page = buffer_pool_manager.fetch_page_writable(page_id);
+        assert!(page.is_ok());
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_use_page_in_buffer_pool(#[case] mark_dirty: bool) {
+        let buffer_pool_manager = create_testing_pool_manager(10);
+
+        let page = buffer_pool_manager.new_page().unwrap();
+        assert!(page.is_some());
+        let page_id = page.unwrap().get_page_id().unwrap().unwrap();
+
+        {
+            let page = buffer_pool_manager.fetch_page_writable(page_id);
+            assert!(page.is_ok());
+            let mut page = page.unwrap();
+            page.write_data(15, &[42]).unwrap();
+        }
+
+        buffer_pool_manager.unpin_page(page_id, mark_dirty).unwrap();
+
+        {
+            let page = buffer_pool_manager.fetch_page(page_id);
+            assert!(page.is_ok());
+            let page = page.unwrap();
+
+            let page_data = page.get_data().unwrap();
+            assert_eq!(page_data[15], 42);
+        }
     }
 }
