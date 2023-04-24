@@ -418,10 +418,16 @@ mod tests {
                 for _ in 0..100 {
                     let page_id: usize;
                     loop {
-                        if let Ok(mut page) = buffer_pool_manager.new_page() {
-                            page_id = page.get_page_id().unwrap().unwrap();
-                            page.write_data(123, &[100]).unwrap();
-                            break;
+                        match buffer_pool_manager.new_page() {
+                            Ok(mut page) => {
+                                page_id = page.get_page_id().unwrap().unwrap();
+                                page.write_data(123, &[100]).unwrap();
+                                break;
+                            }
+                            Err(BufferPoolManagerError::NoFrameAvailable) => {
+                                // Wait for a frame to become available
+                            }
+                            Err(e) => panic!("Unexpected error: {:?}", e),
                         }
                     }
                     buffer_pool_manager.unpin_page(page_id, false).unwrap();
