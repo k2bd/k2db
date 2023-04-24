@@ -36,8 +36,8 @@ impl From<DiskManagerError> for BufferPoolManagerError {
     }
 }
 
-type ReadOnlyPage<'a> = RwLockReadGuard<'a, Box<dyn IPage>>;
-type WritablePage<'a> = RwLockWriteGuard<'a, Box<dyn IPage>>;
+type ReadOnlyPage<'a> = RwLockReadGuard<'a, Box<dyn IPage + Send + Sync>>;
+type WritablePage<'a> = RwLockWriteGuard<'a, Box<dyn IPage + Send + Sync>>;
 
 pub trait IBufferPoolManager {
     /// Fetch the requested page as readable from the buffer pool.
@@ -56,24 +56,25 @@ pub trait IBufferPoolManager {
     fn flush_all_pages(&self) -> Result<(), BufferPoolManagerError>;
 }
 
+#[derive(Clone)]
 struct BufferPoolManager {
-    replacer: Arc<RwLock<Box<dyn IBufferPoolReplacer>>>,
-    disk_manager: Arc<RwLock<Box<dyn IDiskManager>>>,
+    replacer: Arc<RwLock<Box<dyn IBufferPoolReplacer + Send + Sync>>>,
+    disk_manager: Arc<RwLock<Box<dyn IDiskManager + Send + Sync>>>,
     /// page_id -> frame_id
     // Latch on the whole hashmap
     page_table: Arc<RwLock<HashMap<usize, usize>>>,
     // N.B. Latch on the whole array
     free_frames: Arc<RwLock<Vec<usize>>>,
     // N.B. Latch on each individual page, not the array itself
-    pages: Arc<Vec<RwLock<Box<dyn IPage>>>>,
+    pages: Arc<Vec<RwLock<Box<dyn IPage + Send + Sync>>>>,
 }
 
 impl BufferPoolManager {
     #[allow(dead_code)]
     fn new(
         pool_size: usize,
-        replacer: Box<dyn IBufferPoolReplacer>,
-        disk_manager: Box<dyn IDiskManager>,
+        replacer: Box<dyn IBufferPoolReplacer + Send + Sync>,
+        disk_manager: Box<dyn IDiskManager + Send + Sync>,
     ) -> BufferPoolManager {
         BufferPoolManager {
             replacer: Arc::new(RwLock::new(replacer)),
@@ -84,7 +85,7 @@ impl BufferPoolManager {
             // Fill frames with uninitialized pages with no page IDs
             pages: Arc::new(
                 (0..pool_size)
-                    .map(|_| RwLock::new(Box::new(Page::new(None)) as Box<dyn IPage>))
+                    .map(|_| RwLock::new(Box::new(Page::new(None)) as Box<dyn IPage + Send + Sync>))
                     .collect(),
             ),
         }
@@ -92,7 +93,7 @@ impl BufferPoolManager {
 
     fn get_freeable_frame_id(
         &self,
-        replacer: &mut RwLockWriteGuard<Box<dyn IBufferPoolReplacer>>,
+        replacer: &mut RwLockWriteGuard<Box<dyn IBufferPoolReplacer + Send + Sync>>,
     ) -> Result<usize, BufferPoolManagerError> {
         let mut free_frames = self.free_frames.write().unwrap();
         if let Some(f) = free_frames.pop() {
@@ -108,8 +109,8 @@ impl BufferPoolManager {
     /// Write a page to disk if it's dirty
     fn write_if_dirty(
         &self,
-        page: &mut RwLockWriteGuard<Box<dyn IPage>>,
-        disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager>>,
+        page: &mut RwLockWriteGuard<Box<dyn IPage + Send + Sync>>,
+        disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager + Send + Sync>>,
     ) -> Result<(), BufferPoolManagerError> {
         let page_dirty = page.is_dirty()?;
         let page_id = match page.get_page_id() {
@@ -132,10 +133,10 @@ impl BufferPoolManager {
         &self,
         frame_id: usize,
         new_page_id: usize,
-        disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager>>,
-        replacer: &mut RwLockWriteGuard<Box<dyn IBufferPoolReplacer>>,
+        disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager + Send + Sync>>,
+        replacer: &mut RwLockWriteGuard<Box<dyn IBufferPoolReplacer + Send + Sync>>,
         page_table: &mut RwLockWriteGuard<HashMap<usize, usize>>,
-        page: &mut RwLockWriteGuard<Box<dyn IPage>>,
+        page: &mut RwLockWriteGuard<Box<dyn IPage + Send + Sync>>,
     ) -> Result<(), BufferPoolManagerError> {
         if let Some(old_page_id) = page.get_page_id().unwrap() {
             self.write_if_dirty(page, disk_manager)?;
@@ -364,6 +365,35 @@ mod tests {
     }
 
     #[rstest]
+    fn test_new_pages_threaded() {
+        let pool_size = 100;
+        let disk_manager = InMemoryDiskManager::new();
+        let replacer = ClockReplacer::new(pool_size);
+        let buffer_pool_manager =
+            BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager));
+
+        let mut threads = Vec::new();
+        for _ in 0..10 {
+            let buffer_pool_manager = buffer_pool_manager.clone();
+            threads.push(std::thread::spawn(move || {
+                for _ in 0..10 {
+                    let page = buffer_pool_manager.new_page().unwrap();
+                    assert!(page.is_some());
+                }
+            }));
+        }
+
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        for page_id in 0..100 {
+            let page = buffer_pool_manager.fetch_page(page_id);
+            assert!(page.is_ok());
+        }
+    }
+
+    #[rstest]
     #[case(1)]
     #[case(2)]
     #[case(3)]
@@ -394,5 +424,24 @@ mod tests {
             let page = buffer_pool_manager.new_page().unwrap();
             assert!(page.is_some());
         }
+    }
+
+    #[rstest]
+    fn test_fetch_page() {
+        let disk_manager = InMemoryDiskManager::new();
+        let replacer = ClockReplacer::new(10);
+        let buffer_pool_manager =
+            BufferPoolManager::new(10, Box::new(replacer), Box::new(disk_manager));
+
+        let page = buffer_pool_manager.fetch_page(0);
+        assert!(page.is_err());
+
+        let page = buffer_pool_manager.new_page().unwrap();
+        assert!(page.is_some());
+        let page_id = page.unwrap().get_page_id().unwrap().unwrap();
+        buffer_pool_manager.unpin_page(page_id, false).unwrap();
+
+        let page = buffer_pool_manager.fetch_page(page_id);
+        assert!(page.is_ok());
     }
 }
