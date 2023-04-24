@@ -36,8 +36,8 @@ impl From<DiskManagerError> for BufferPoolManagerError {
     }
 }
 
-type ReadOnlyPage<'a> = RwLockReadGuard<'a, Box<dyn IPage + Send + Sync>>;
-type WritablePage<'a> = RwLockWriteGuard<'a, Box<dyn IPage + Send + Sync>>;
+type ReadOnlyPage<'a> = RwLockReadGuard<'a, PageGeneric>;
+type WritablePage<'a> = RwLockWriteGuard<'a, PageGeneric>;
 
 pub trait IBufferPoolManager {
     /// Fetch the requested page as readable from the buffer pool.
@@ -56,25 +56,29 @@ pub trait IBufferPoolManager {
     fn flush_all_pages(&self) -> Result<(), BufferPoolManagerError>;
 }
 
+type ReplacerGeneric = Box<dyn IBufferPoolReplacer + Send + Sync>;
+type DiskManagerGeneric = Box<dyn IDiskManager + Send + Sync>;
+type PageGeneric = Box<dyn IPage + Send + Sync>;
+
 #[derive(Clone)]
 struct BufferPoolManager {
-    replacer: Arc<RwLock<Box<dyn IBufferPoolReplacer + Send + Sync>>>,
-    disk_manager: Arc<RwLock<Box<dyn IDiskManager + Send + Sync>>>,
+    replacer: Arc<RwLock<ReplacerGeneric>>,
+    disk_manager: Arc<RwLock<DiskManagerGeneric>>,
     /// page_id -> frame_id
     // Latch on the whole hashmap
     page_table: Arc<RwLock<HashMap<usize, usize>>>,
     // N.B. Latch on the whole array
     free_frames: Arc<RwLock<Vec<usize>>>,
     // N.B. Latch on each individual page, not the array itself
-    pages: Arc<Vec<RwLock<Box<dyn IPage + Send + Sync>>>>,
+    pages: Arc<Vec<RwLock<PageGeneric>>>,
 }
 
 impl BufferPoolManager {
     #[allow(dead_code)]
     fn new(
         pool_size: usize,
-        replacer: Box<dyn IBufferPoolReplacer + Send + Sync>,
-        disk_manager: Box<dyn IDiskManager + Send + Sync>,
+        replacer: ReplacerGeneric,
+        disk_manager: DiskManagerGeneric,
     ) -> BufferPoolManager {
         BufferPoolManager {
             replacer: Arc::new(RwLock::new(replacer)),
@@ -85,7 +89,7 @@ impl BufferPoolManager {
             // Fill frames with uninitialized pages with no page IDs
             pages: Arc::new(
                 (0..pool_size)
-                    .map(|_| RwLock::new(Box::new(Page::new(None)) as Box<dyn IPage + Send + Sync>))
+                    .map(|_| RwLock::new(Box::new(Page::new(None)) as PageGeneric))
                     .collect(),
             ),
         }
@@ -93,7 +97,7 @@ impl BufferPoolManager {
 
     fn get_freeable_frame_id(
         &self,
-        replacer: &mut RwLockWriteGuard<Box<dyn IBufferPoolReplacer + Send + Sync>>,
+        replacer: &mut RwLockWriteGuard<ReplacerGeneric>,
     ) -> Result<usize, BufferPoolManagerError> {
         let mut free_frames = self.free_frames.write().unwrap();
         if let Some(f) = free_frames.pop() {
@@ -109,8 +113,8 @@ impl BufferPoolManager {
     /// Write a page to disk if it's dirty
     fn write_if_dirty(
         &self,
-        page: &mut RwLockWriteGuard<Box<dyn IPage + Send + Sync>>,
-        disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager + Send + Sync>>,
+        page: &mut RwLockWriteGuard<PageGeneric>,
+        disk_manager: &mut RwLockWriteGuard<DiskManagerGeneric>,
     ) -> Result<(), BufferPoolManagerError> {
         let page_dirty = page.is_dirty()?;
         let page_id = match page.get_page_id() {
@@ -133,10 +137,10 @@ impl BufferPoolManager {
         &self,
         frame_id: usize,
         new_page_id: usize,
-        disk_manager: &mut RwLockWriteGuard<Box<dyn IDiskManager + Send + Sync>>,
-        replacer: &mut RwLockWriteGuard<Box<dyn IBufferPoolReplacer + Send + Sync>>,
+        disk_manager: &mut RwLockWriteGuard<DiskManagerGeneric>,
+        replacer: &mut RwLockWriteGuard<ReplacerGeneric>,
         page_table: &mut RwLockWriteGuard<HashMap<usize, usize>>,
-        page: &mut RwLockWriteGuard<Box<dyn IPage + Send + Sync>>,
+        page: &mut RwLockWriteGuard<PageGeneric>,
     ) -> Result<(), BufferPoolManagerError> {
         if let Some(old_page_id) = page.get_page_id().unwrap() {
             self.write_if_dirty(page, disk_manager)?;
