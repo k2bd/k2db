@@ -647,4 +647,45 @@ mod tests {
             }
         }
     }
+
+    #[rstest]
+    /// We get an error if we try to delete a page that's in use.
+    fn test_delete_page_in_use() {
+        let buffer_pool_manager = create_testing_pool_manager(10);
+
+        let page_id: usize;
+        {
+            let page = buffer_pool_manager.new_page();
+            assert!(page.is_ok());
+            page_id = page.unwrap().get_page_id().unwrap().unwrap();
+        }
+
+        {
+            let page = buffer_pool_manager.fetch_page_writable(page_id);
+            assert!(page.is_ok());
+            let mut page = page.unwrap();
+            page.write_data(15, &[42]).unwrap();
+        }
+
+        let result = buffer_pool_manager.delete_page(page_id);
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_fetch_page_not_exist() {
+        let buffer_pool_manager = create_testing_pool_manager(10);
+        assert!(buffer_pool_manager.fetch_page(0).is_err());
+    }
+
+    #[rstest]
+    fn test_unpin_page_not_in_pool() {
+        let buffer_pool_manager = create_testing_pool_manager(10);
+        assert!(buffer_pool_manager.unpin_page(0, false).is_err());
+    }
+
+    #[rstest]
+    fn test_flush_page_not_in_pool() {
+        let buffer_pool_manager = create_testing_pool_manager(10);
+        assert!(buffer_pool_manager.flush_page(0).is_err());
+    }
 }
