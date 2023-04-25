@@ -7,20 +7,25 @@ enum ClockReplacerPageStatus {
     Accessed,
 }
 
-struct ClockReplacer {
-    size: usize,
+pub struct ClockReplacer {
     clock_hand: usize,
     page_status: Vec<ClockReplacerPageStatus>,
 }
 
 impl ClockReplacer {
     /// Creates a new [`ClockReplacer`].
-    fn new(size: usize) -> Self {
+    #[allow(dead_code)]
+    pub fn new(size: usize) -> Self {
         ClockReplacer {
-            size,
             clock_hand: 0,
             page_status: vec![ClockReplacerPageStatus::Empty; size],
         }
+    }
+}
+
+impl ClockReplacer {
+    fn max_size(&self) -> usize {
+        self.page_status.len()
     }
 }
 
@@ -42,7 +47,7 @@ impl IBufferPoolReplacer for ClockReplacer {
                     self.page_status[self.clock_hand] = ClockReplacerPageStatus::Untouched;
                 }
             }
-            self.clock_hand = (self.clock_hand + 1) % self.size;
+            self.clock_hand = (self.clock_hand + 1) % self.max_size();
         }
 
         if let Some(idx) = victim {
@@ -53,7 +58,7 @@ impl IBufferPoolReplacer for ClockReplacer {
     }
 
     fn pin(&mut self, frame_id: usize) -> Result<(), BufferPoolReplacerError> {
-        if frame_id >= self.size {
+        if frame_id >= self.max_size() {
             return Err(BufferPoolReplacerError::FrameOutOfRange(format!(
                 "frame_id {} is out of range",
                 frame_id
@@ -65,7 +70,7 @@ impl IBufferPoolReplacer for ClockReplacer {
     }
 
     fn unpin(&mut self, frame_id: usize) -> Result<(), BufferPoolReplacerError> {
-        if frame_id >= self.size {
+        if frame_id >= self.max_size() {
             return Err(BufferPoolReplacerError::FrameOutOfRange(format!(
                 "frame_id {} is out of range",
                 frame_id

@@ -1,13 +1,9 @@
-#[cfg(test)]
-use mockall::automock;
-
 #[derive(Debug, PartialEq)]
 pub enum BufferPoolReplacerError {
     /// Frame is out of range
     FrameOutOfRange(String),
 }
 
-#[cfg_attr(test, automock)]
 pub trait IBufferPoolReplacer {
     /// Select a frame to remove from the buffer pool, returning the ID of the
     /// removed frame. If no frame can be freed, e.g. all frame slots are free,
