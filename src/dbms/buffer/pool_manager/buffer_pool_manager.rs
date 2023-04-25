@@ -110,6 +110,25 @@ impl BufferPoolManager {
         }
     }
 
+    /// Write a page to disk
+    fn write_page(
+        &self,
+        page: &mut RwLockWriteGuard<PageGeneric>,
+        disk_manager: &mut RwLockWriteGuard<DiskManagerGeneric>,
+    ) -> Result<(), BufferPoolManagerError> {
+        let page_id = match page.get_page_id() {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(()), // TODO: revisit
+            Err(e) => return Err(BufferPoolManagerError::PageError(e)),
+        };
+
+        let page_data = page.get_data()?;
+        disk_manager.write_page(page_id, &page_data)?;
+        page.set_clean()?;
+
+        Ok(())
+    }
+
     /// Write a page to disk if it's dirty
     fn write_if_dirty(
         &self,
@@ -117,16 +136,9 @@ impl BufferPoolManager {
         disk_manager: &mut RwLockWriteGuard<DiskManagerGeneric>,
     ) -> Result<(), BufferPoolManagerError> {
         let page_dirty = page.is_dirty()?;
-        let page_id = match page.get_page_id() {
-            Ok(Some(id)) => id,
-            Ok(None) => return Ok(()), // TODO: revisit
-            Err(e) => return Err(BufferPoolManagerError::PageError(e)),
-        };
 
         if page_dirty {
-            let page_data = page.get_data()?;
-            disk_manager.write_page(page_id, &page_data)?;
-            page.set_clean()?;
+            self.write_page(page, disk_manager)?;
         }
 
         Ok(())
@@ -281,12 +293,7 @@ impl IBufferPoolManager for BufferPoolManager {
         if let Some(&frame_id) = page_table.get(&page_id) {
             let mut page = self.pages[frame_id].write().unwrap();
 
-            let data = page.get_data()?;
-            disk_manager.write_page(page_id, &data)?;
-
-            page.set_clean()?;
-
-            Ok(())
+            self.write_page(&mut page, &mut disk_manager)
         } else {
             Err(BufferPoolManagerError::PageNotInPool)
         }
@@ -334,7 +341,7 @@ impl IBufferPoolManager for BufferPoolManager {
             .collect::<Vec<_>>();
 
         for page in pages.iter_mut() {
-            self.write_if_dirty(page, &mut disk_manager)?;
+            self.write_page(page, &mut disk_manager)?;
         }
 
         Ok(())
@@ -541,6 +548,103 @@ mod tests {
 
             let page_data = page.get_data().unwrap();
             assert_eq!(page_data[15], 42);
+        }
+    }
+
+    #[rstest]
+    fn test_flush_page() {
+        let buffer_pool_manager = create_testing_pool_manager(10);
+
+        let page_id: usize;
+        {
+            let page = buffer_pool_manager.new_page();
+            assert!(page.is_ok());
+            page_id = page.unwrap().get_page_id().unwrap().unwrap();
+        }
+
+        {
+            let page = buffer_pool_manager.fetch_page_writable(page_id);
+            assert!(page.is_ok());
+            let mut page = page.unwrap();
+            page.write_data(15, &[42]).unwrap();
+        }
+
+        buffer_pool_manager.unpin_page(page_id, true).unwrap();
+
+        {
+            let page = buffer_pool_manager.fetch_page(page_id);
+            assert!(page.is_ok());
+            let page = page.unwrap();
+
+            let page_data = page.get_data().unwrap();
+            assert_eq!(page_data[15], 42);
+
+            assert!(page.is_dirty().unwrap());
+        }
+
+        buffer_pool_manager.flush_page(page_id).unwrap();
+
+        {
+            let page = buffer_pool_manager.fetch_page(page_id);
+            assert!(page.is_ok());
+            let page = page.unwrap();
+
+            let page_data = page.get_data().unwrap();
+            assert_eq!(page_data[15], 42);
+
+            assert!(!page.is_dirty().unwrap());
+        }
+    }
+
+    #[rstest]
+    fn test_flush_all_pages() {
+        let buffer_pool_manager = create_testing_pool_manager(10);
+
+        let mut page_ids = Vec::<usize>::new();
+
+        for _ in 0..10 {
+            let page = buffer_pool_manager.new_page();
+            assert!(page.is_ok());
+            page_ids.push(page.unwrap().get_page_id().unwrap().unwrap());
+        }
+
+        for page_id in &page_ids {
+            {
+                let page = buffer_pool_manager.fetch_page_writable(*page_id);
+                assert!(page.is_ok());
+                let mut page = page.unwrap();
+                page.write_data(15, &[42]).unwrap();
+            }
+
+            buffer_pool_manager.unpin_page(*page_id, true).unwrap();
+        }
+
+        for page_id in &page_ids {
+            {
+                let page = buffer_pool_manager.fetch_page(*page_id);
+                assert!(page.is_ok());
+                let page = page.unwrap();
+
+                let page_data = page.get_data().unwrap();
+                assert_eq!(page_data[15], 42);
+
+                assert!(page.is_dirty().unwrap());
+            }
+        }
+
+        buffer_pool_manager.flush_all_pages().unwrap();
+
+        for page_id in &page_ids {
+            {
+                let page = buffer_pool_manager.fetch_page(*page_id);
+                assert!(page.is_ok());
+                let page = page.unwrap();
+
+                let page_data = page.get_data().unwrap();
+                assert_eq!(page_data[15], 42);
+
+                assert!(!page.is_dirty().unwrap());
+            }
         }
     }
 }
