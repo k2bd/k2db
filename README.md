@@ -13,6 +13,8 @@ The goal of this repo is for me to learn about database internals and DBMS devel
 - [Project 1](https://15445.courses.cs.cmu.edu/fall2019/project1/)
   - [Task 1](src/dbms/buffer/replacer/clock_replacer.rs)
   - [Task 2](src/dbms/buffer/pool_manager/buffer_pool_manager.rs)
+- [Project 2](https://15445.courses.cs.cmu.edu/fall2019/project2/)
+  - [Task 1]()
 
 
 ## Resources

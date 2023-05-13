@@ -1,14 +1,17 @@
-use crate::dbms::types::{PageData, PAGE_SIZE, PageId};
+use crate::dbms::types::{PageData, PageId, PAGE_SIZE};
 
 pub type PageError = ();
 
 pub trait IPage {
     /// Get a copy of the page's data
     fn get_data(&self) -> Result<PageData, PageError>;
+    /// Get a copy of a slice of the page's data, starting from the given offset
+    /// in bytes and with the given length
+    fn read_data(&self, offset: usize, len: usize) -> Result<Vec<u8>, PageError>;
     /// Set the whole content of the page, and set the page to dirty
     fn set_data(&mut self, data: PageData) -> Result<(), PageError>;
-    /// Write a slice of the page, starting from the given offset, and set the
-    /// page to dirty
+    /// Write a slice of the page, starting from the given offset in bytes,
+    /// and set the page to dirty
     fn write_data(&mut self, offset: usize, data: &[u8]) -> Result<(), PageError>;
     /// Get the page ID
     fn get_page_id(&self) -> Result<Option<PageId>, PageError>;
@@ -52,6 +55,10 @@ impl Page {
 impl IPage for Page {
     fn get_data(&self) -> Result<PageData, PageError> {
         Ok(self.data)
+    }
+
+    fn read_data(&self, offset: usize, len: usize) -> Result<Vec<u8>, PageError> {
+        Ok(self.data[offset..offset + len].to_vec())
     }
 
     fn set_data(&mut self, data: PageData) -> Result<(), PageError> {

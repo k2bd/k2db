@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
-use crate::dbms::buffer::replacer::{BufferPoolReplacerError, IBufferPoolReplacer};
-use crate::dbms::storage::disk::{DiskManagerError, IDiskManager};
-use crate::dbms::storage::page::{IPage, Page, PageError};
+use crate::dbms::buffer::replacer::{BufferPoolReplacerError};
+use crate::dbms::buffer::types::{ReadOnlyPage, WritablePage, ReplacerGeneric, DiskManagerGeneric, PageGeneric};
+use crate::dbms::storage::disk::{DiskManagerError};
+use crate::dbms::storage::page::{Page, PageError};
 use crate::dbms::types::{PAGE_SIZE, PageId};
 
 #[derive(Debug)]
@@ -37,9 +38,6 @@ impl From<DiskManagerError> for BufferPoolManagerError {
     }
 }
 
-type ReadOnlyPage<'a> = RwLockReadGuard<'a, PageGeneric>;
-type WritablePage<'a> = RwLockWriteGuard<'a, PageGeneric>;
-
 pub trait IBufferPoolManager {
     /// Fetch the requested page as readable from the buffer pool.
     fn fetch_page(&self, page_id: PageId) -> Result<ReadOnlyPage, BufferPoolManagerError>;
@@ -56,10 +54,6 @@ pub trait IBufferPoolManager {
     /// Flushes all the pages in the buffer pool to disk.
     fn flush_all_pages(&self) -> Result<(), BufferPoolManagerError>;
 }
-
-type ReplacerGeneric = Box<dyn IBufferPoolReplacer + Send + Sync>;
-type DiskManagerGeneric = Box<dyn IDiskManager + Send + Sync>;
-type PageGeneric = Box<dyn IPage + Send + Sync>;
 
 #[derive(Clone)]
 struct BufferPoolManager {
