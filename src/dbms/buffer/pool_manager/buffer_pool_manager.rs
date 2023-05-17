@@ -56,7 +56,7 @@ pub trait IBufferPoolManager {
 }
 
 #[derive(Clone)]
-struct BufferPoolManager {
+pub struct BufferPoolManager {
     replacer: Arc<RwLock<ReplacerGeneric>>,
     disk_manager: Arc<RwLock<DiskManagerGeneric>>,
     /// page_id -> frame_id
@@ -69,8 +69,7 @@ struct BufferPoolManager {
 }
 
 impl BufferPoolManager {
-    #[allow(dead_code)]
-    fn new(
+    pub fn new(
         pool_size: usize,
         replacer: ReplacerGeneric,
         disk_manager: DiskManagerGeneric,
@@ -346,15 +345,8 @@ impl IBufferPoolManager for BufferPoolManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dbms::buffer::replacer::clock_replacer::ClockReplacer;
-    use crate::dbms::storage::disk::testing::InMemoryDiskManager;
     use rstest::*;
-
-    fn create_testing_pool_manager(pool_size: usize) -> BufferPoolManager {
-        let disk_manager = InMemoryDiskManager::new();
-        let replacer = ClockReplacer::new(pool_size);
-        BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager))
-    }
+    use crate::dbms::buffer::pool_manager::testing::create_testing_pool_manager;
 
     #[rstest]
     #[case(1)]
