@@ -15,7 +15,7 @@ pub struct InMemoryDiskManager {
 }
 
 impl InMemoryDiskManager {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             pages: HashMap::new(),

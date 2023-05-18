@@ -6,6 +6,8 @@ use crate::dbms::{
 
 #[derive(Debug, PartialEq)]
 pub enum HashTableHeaderError {
+    /// Provided page ID is not set
+    NoPageId,
     PageError(PageError),
 }
 
@@ -109,6 +111,18 @@ impl<'a> WritableHashTableHeaderPage<'a> {
         self.page.write_data(offset_bytes, &value.to_be_bytes())?;
         Ok(())
     }
+
+    /// Initialize a header page to contain its page ID
+    fn initialize(&mut self) -> Result<(), HashTableHeaderError> {
+        let page_id = self.page.get_page_id()?;
+        match page_id {
+            Some(page_id) => {
+                self.set_page_id(page_id)?;
+                Ok(())
+            }
+            None => Err(HashTableHeaderError::NoPageId),
+        }
+    }
 }
 
 impl IHashTableHeaderPageRead for WritableHashTableHeaderPage<'_> {
@@ -166,13 +180,15 @@ impl IHashTableHeaderPageWrite for WritableHashTableHeaderPage<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::dbms::buffer::pool_manager::{testing::create_testing_pool_manager, IBufferPoolManager};
+    use crate::dbms::buffer::pool_manager::{
+        testing::create_testing_pool_manager, IBufferPoolManager,
+    };
 
     use super::*;
     use rstest::*;
 
     #[rstest]
-    fn read_page_id() {
+    fn test_writable_page_read_page_id() {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
 
@@ -185,5 +201,199 @@ mod tests {
         assert_eq!(page_id, 123);
     }
 
-    // TODO: threading tests
+    #[rstest]
+    fn test_threaded_set_read_page_id() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        // Initialize a bunch of pages in threads
+        let mut write_threads = Vec::new();
+        {
+            for _ in 0..11 {
+                let buffer_pool_manager = pool_manager.clone();
+                write_threads.push(std::thread::spawn(move || {
+                    let page = buffer_pool_manager.new_page().unwrap();
+                    let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
+                    tmp_hash_table_header_page.initialize().unwrap();
+                }));
+            }
+        }
+
+        for thread in write_threads {
+            thread.join().unwrap();
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        // Show that we can read back the page ID from a page
+        // (relying on the test logic that page IDs in the test pool manager count up from 0)
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let buffer_pool_manager = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    let page = buffer_pool_manager.fetch_page(i).unwrap();
+                    let hash_table_header_page_reader = ReadOnlyHashTableHeaderPage { page };
+
+                    let page_id_header = hash_table_header_page_reader.get_page_id().unwrap();
+
+                    assert_eq!(page_id_header, i);
+                }));
+            }
+        }
+
+        for thread in read_threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[rstest]
+    fn test_threaded_read_size() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        {
+            for i in 0..11 {
+                let page = pool_manager.new_page().unwrap();
+                let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
+                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page.set_size(i * 5).unwrap();
+            }
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        // Show that we can read back the page ID from a page
+        // (relying on the test logic that page IDs in the test pool manager count up from 0)
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let buffer_pool_manager = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    let page = buffer_pool_manager.fetch_page(i).unwrap();
+                    let hash_table_header_page_reader = ReadOnlyHashTableHeaderPage { page };
+
+                    let page_size = hash_table_header_page_reader.get_size().unwrap();
+
+                    assert_eq!(page_size, i * 5);
+                }));
+            }
+        }
+
+        for thread in read_threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[rstest]
+    fn test_threaded_read_next_ind() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        {
+            for i in 0..11 {
+                let page = pool_manager.new_page().unwrap();
+                let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
+                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page.set_next_ind(i * 5).unwrap();
+            }
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        // Show that we can read back the page ID from a page
+        // (relying on the test logic that page IDs in the test pool manager count up from 0)
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let buffer_pool_manager = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    let page = buffer_pool_manager.fetch_page(i).unwrap();
+                    let hash_table_header_page_reader = ReadOnlyHashTableHeaderPage { page };
+
+                    let page_next_ind = hash_table_header_page_reader.get_next_ind().unwrap();
+
+                    assert_eq!(page_next_ind, i * 5);
+                }));
+            }
+        }
+
+        for thread in read_threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[rstest]
+    fn test_threaded_read_lsn() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        {
+            for i in 0..11 {
+                let page = pool_manager.new_page().unwrap();
+                let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
+                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page.set_lsn(i * 5).unwrap();
+            }
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        // Show that we can read back the page ID from a page
+        // (relying on the test logic that page IDs in the test pool manager count up from 0)
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let buffer_pool_manager = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    let page = buffer_pool_manager.fetch_page(i).unwrap();
+                    let hash_table_header_page_reader = ReadOnlyHashTableHeaderPage { page };
+
+                    let page_lsn = hash_table_header_page_reader.get_lsn().unwrap();
+
+                    assert_eq!(page_lsn, i * 5);
+                }));
+            }
+        }
+
+        for thread in read_threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[rstest]
+    fn test_threaded_read_block_page_id() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        {
+            for i in 0..11 {
+                let page = pool_manager.new_page().unwrap();
+                let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
+                tmp_hash_table_header_page.initialize().unwrap();
+
+                tmp_hash_table_header_page.set_block_page_id(10, i * 3).unwrap();
+                tmp_hash_table_header_page.set_block_page_id(11, i * 4).unwrap();
+                tmp_hash_table_header_page.set_block_page_id(12, i * 5).unwrap();
+            }
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        // Show that we can read back the page ID from a page
+        // (relying on the test logic that page IDs in the test pool manager count up from 0)
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let buffer_pool_manager = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    let page = buffer_pool_manager.fetch_page(i).unwrap();
+                    let hash_table_header_page_reader = ReadOnlyHashTableHeaderPage { page };
+
+                    assert_eq!(hash_table_header_page_reader.get_block_page_id(10), Ok(i * 3));
+                    assert_eq!(hash_table_header_page_reader.get_block_page_id(11), Ok(i * 4));
+                    assert_eq!(hash_table_header_page_reader.get_block_page_id(12), Ok(i * 5));
+                }));
+            }
+        }
+
+        for thread in read_threads {
+            thread.join().unwrap();
+        }
+    }
 }
