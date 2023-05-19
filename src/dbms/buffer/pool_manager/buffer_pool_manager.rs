@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
-use crate::dbms::buffer::replacer::{BufferPoolReplacerError};
-use crate::dbms::buffer::types::{ReadOnlyPage, WritablePage, ReplacerGeneric, DiskManagerGeneric, PageGeneric};
-use crate::dbms::storage::disk::{DiskManagerError};
+use crate::dbms::buffer::replacer::BufferPoolReplacerError;
+use crate::dbms::buffer::types::{
+    DiskManagerGeneric, PageGeneric, ReadOnlyPage, ReplacerGeneric, WritablePage,
+};
+use crate::dbms::storage::disk::DiskManagerError;
 use crate::dbms::storage::page::{Page, PageError};
-use crate::dbms::types::{PAGE_SIZE, PageId};
+use crate::dbms::types::{PageId, PAGE_SIZE};
 
 #[derive(Debug)]
 pub enum BufferPoolManagerError {
@@ -69,6 +71,7 @@ pub struct BufferPoolManager {
 }
 
 impl BufferPoolManager {
+    #[allow(dead_code)]
     pub fn new(
         pool_size: usize,
         replacer: ReplacerGeneric,
@@ -345,8 +348,8 @@ impl IBufferPoolManager for BufferPoolManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rstest::*;
     use crate::dbms::buffer::pool_manager::testing::create_testing_pool_manager;
+    use rstest::*;
 
     #[rstest]
     #[case(1)]

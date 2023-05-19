@@ -112,6 +112,7 @@ impl<'a> WritableHashTableHeaderPage<'a> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     /// Initialize a header page to contain its page ID
     fn initialize(&mut self) -> Result<(), HashTableHeaderError> {
         let page_id = self.page.get_page_id()?;
@@ -367,9 +368,15 @@ mod tests {
                 let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
                 tmp_hash_table_header_page.initialize().unwrap();
 
-                tmp_hash_table_header_page.set_block_page_id(10, i * 3).unwrap();
-                tmp_hash_table_header_page.set_block_page_id(11, i * 4).unwrap();
-                tmp_hash_table_header_page.set_block_page_id(12, i * 5).unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(10, i * 3)
+                    .unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(11, i * 4)
+                    .unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(12, i * 5)
+                    .unwrap();
             }
         }
 
@@ -385,9 +392,18 @@ mod tests {
                     let page = buffer_pool_manager.fetch_page(i).unwrap();
                     let hash_table_header_page_reader = ReadOnlyHashTableHeaderPage { page };
 
-                    assert_eq!(hash_table_header_page_reader.get_block_page_id(10), Ok(i * 3));
-                    assert_eq!(hash_table_header_page_reader.get_block_page_id(11), Ok(i * 4));
-                    assert_eq!(hash_table_header_page_reader.get_block_page_id(12), Ok(i * 5));
+                    assert_eq!(
+                        hash_table_header_page_reader.get_block_page_id(10),
+                        Ok(i * 3)
+                    );
+                    assert_eq!(
+                        hash_table_header_page_reader.get_block_page_id(11),
+                        Ok(i * 4)
+                    );
+                    assert_eq!(
+                        hash_table_header_page_reader.get_block_page_id(12),
+                        Ok(i * 5)
+                    );
                 }));
             }
         }

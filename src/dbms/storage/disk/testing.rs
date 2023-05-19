@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::dbms::types::{PageData, PAGE_SIZE, PageId};
+use crate::dbms::types::{PageData, PageId, PAGE_SIZE};
 
 use super::{DiskManagerError, IDiskManager};
 

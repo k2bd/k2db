@@ -1,5 +1,7 @@
 #[cfg(test)]
-use crate::dbms::{storage::disk::testing::InMemoryDiskManager, buffer::replacer::clock_replacer::ClockReplacer};
+use crate::dbms::{
+    buffer::replacer::clock_replacer::ClockReplacer, storage::disk::testing::InMemoryDiskManager,
+};
 
 #[cfg(test)]
 use super::BufferPoolManager;
