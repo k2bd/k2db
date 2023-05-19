@@ -203,6 +203,62 @@ mod tests {
     }
 
     #[rstest]
+    fn test_writable_page_read_size() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+
+        hash_table_header_page.set_size(123).unwrap();
+
+        let page_size = hash_table_header_page.get_size().unwrap();
+
+        assert_eq!(page_size, 123);
+    }
+
+    #[rstest]
+    fn test_writable_page_read_next_ind() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+
+        hash_table_header_page.set_next_ind(123).unwrap();
+
+        let page_next_ind = hash_table_header_page.get_next_ind().unwrap();
+
+        assert_eq!(page_next_ind, 123);
+    }
+
+    #[rstest]
+    fn test_writable_page_read_lsn() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+
+        hash_table_header_page.set_lsn(123).unwrap();
+
+        let page_lsn = hash_table_header_page.get_lsn().unwrap();
+
+        assert_eq!(page_lsn, 123);
+    }
+
+    #[rstest]
+    fn test_writable_page_read_block_page_id() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+
+        hash_table_header_page.set_block_page_id(10, 123).unwrap();
+
+        let page_block_page_id = hash_table_header_page.get_block_page_id(10).unwrap();
+
+        assert_eq!(page_block_page_id, 123);
+    }
+
+    #[rstest]
     fn test_threaded_set_read_page_id() {
         let pool_manager = create_testing_pool_manager(100);
 
