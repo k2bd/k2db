@@ -4,7 +4,7 @@ use crate::dbms::{
     types::PageId,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HashTableHeaderError {
     /// Provided page ID is not set
     NoPageId,

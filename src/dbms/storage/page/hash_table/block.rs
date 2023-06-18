@@ -3,8 +3,8 @@ use crate::dbms::storage::{page::PageError, serialize::BytesSerialize};
 pub trait IHashTableBlockPage<
     const KEY_SIZE: usize,
     const VALUE_SIZE: usize,
-    KeyType: BytesSerialize<KEY_SIZE>,
-    ValueType: BytesSerialize<VALUE_SIZE>,
+    KeyType: BytesSerialize,
+    ValueType: BytesSerialize,
 >
 {
     fn key_at(&self, offset: usize) -> Result<KeyType, HashTableBlockError>;

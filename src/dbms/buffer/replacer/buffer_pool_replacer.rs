@@ -1,4 +1,4 @@
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BufferPoolReplacerError {
     /// Frame is out of range
     FrameOutOfRange(String),
