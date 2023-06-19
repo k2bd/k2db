@@ -15,6 +15,7 @@ pub trait IHashTableBlockPageRead<KeyType: BytesSerialize, ValueType: BytesSeria
     fn value_at(&self, slot: usize) -> Result<ValueType, HashTableBlockError>;
     fn slot_occupied(&self, slot: usize) -> Result<bool, HashTableBlockError>;
     fn slot_readable(&self, slot: usize) -> Result<bool, HashTableBlockError>;
+    fn num_slots(&self) -> usize;
 }
 
 pub trait IHashTableBlockPageWrite<KeyType: BytesSerialize, ValueType: BytesSerialize>:
@@ -29,10 +30,11 @@ pub trait IHashTableBlockPageWrite<KeyType: BytesSerialize, ValueType: BytesSeri
     fn remove_slot(&mut self, slot: usize) -> Result<(), HashTableBlockError>;
 }
 
-#[allow(dead_code)]
+#[derive(Debug)]
 pub enum HashTableBlockError {
     PageError(PageError),
     SlotNotReadable,
+    SlotOccupied,
 }
 
 impl From<PageError> for HashTableBlockError {
@@ -145,6 +147,10 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
 
     fn slot_readable(&self, slot: usize) -> Result<bool, HashTableBlockError> {
         self.read_readable(slot)
+    }
+
+    fn num_slots(&self) -> usize {
+        self.layout.max_values
     }
 }
 
@@ -289,6 +295,10 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
     fn slot_readable(&self, slot: usize) -> Result<bool, HashTableBlockError> {
         self.read_readable(slot)
     }
+
+    fn num_slots(&self) -> usize {
+        self.layout.max_values
+    }
 }
 
 impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
@@ -301,6 +311,10 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         key: KeyType,
         value: ValueType,
     ) -> Result<(), HashTableBlockError> {
+        if self.read_occupied(slot)? {
+            return Err(HashTableBlockError::SlotOccupied);
+        }
+
         self.write_key(slot, key)?;
         self.write_value(slot, value)?;
         self.write_occupied(slot, true)?;
@@ -316,8 +330,172 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
 
 #[cfg(test)]
 mod tests {
-    use crate::tuple_type;
+    use crate::dbms::buffer::pool_manager::testing::create_testing_pool_manager;
+    use crate::dbms::buffer::pool_manager::IBufferPoolManager;
+    use crate::{tuple, tuple_type};
 
     use super::*;
     use rstest::*;
+
+    #[rstest]
+    fn test_writable_block_page_put_and_read_slot() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        // Create a block page with u32 keys and (bool, f64) values
+        let mut block_page =
+            WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
+
+        // Put a key-value pair in the first slot
+        let key = tuple![1];
+        let value = tuple![true, 1.0];
+        block_page.put_slot(0, key, value).unwrap();
+
+        // Read the key-value pair back
+        let read_key = block_page.key_at(0).unwrap();
+        let read_value = block_page.value_at(0).unwrap();
+
+        assert_eq!(read_key, key);
+        assert_eq!(read_value, value);
+    }
+
+    #[rstest]
+    fn test_writable_block_page_write_to_used_slot() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        // Create a block page with u32 keys and (bool, f64) values
+        let mut block_page =
+            WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
+
+        // Put a key-value pair in the first slot
+        let key1 = tuple![1];
+        let value1 = tuple![true, 1.0];
+        block_page.put_slot(0, key1, value1).unwrap();
+
+        // Put a key-value pair in the first slot again
+        let key2 = tuple![2];
+        let value2 = tuple![false, 2.0];
+        let result = block_page.put_slot(0, key2, value2);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            HashTableBlockError::SlotOccupied
+        ));
+    }
+
+    #[rstest]
+    fn test_writable_block_page_write_to_used_removed_slot() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        // Create a block page with u32 keys and (bool, f64) values
+        let mut block_page =
+            WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
+
+        // Put a key-value pair in the first slot
+        let key1 = tuple![1];
+        let value1 = tuple![true, 1.0];
+        block_page.put_slot(0, key1, value1).unwrap();
+
+        // Remove the first slot
+        block_page.remove_slot(0).unwrap();
+
+        // Put a key-value pair in the first slot again
+        let key2 = tuple![2];
+        let value2 = tuple![false, 2.0];
+        let result = block_page.put_slot(0, key2, value2);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            HashTableBlockError::SlotOccupied
+        ));
+    }
+
+    #[rstest]
+    fn test_writable_block_page_remove_slot() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        // Create a block page with u32 keys and (bool, f64) values
+        let mut block_page =
+            WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
+
+        // Put a key-value pair in the first slot
+        let key1 = tuple![1];
+        let value1 = tuple![true, 1.0];
+        block_page.put_slot(0, key1, value1).unwrap();
+
+        // Remove the first slot
+        block_page.remove_slot(0).unwrap();
+
+        // Attempt to read the key-value pair back
+        let key_res = block_page.key_at(0);
+        let value_res = block_page.value_at(0);
+
+        assert!(key_res.is_err());
+        assert!(matches!(
+            key_res.unwrap_err(),
+            HashTableBlockError::SlotNotReadable
+        ));
+
+        assert!(value_res.is_err());
+        assert!(matches!(
+            value_res.unwrap_err(),
+            HashTableBlockError::SlotNotReadable
+        ));
+    }
+
+    #[rstest]
+    fn test_writable_block_page_remove_slot_twice() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        // Create a block page with u32 keys and (bool, f64) values
+        let mut block_page =
+            WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
+
+        // Put a key-value pair in the first slot
+        let key1 = tuple![1];
+        let value1 = tuple![true, 1.0];
+        block_page.put_slot(0, key1, value1).unwrap();
+
+        // Remove the first slot
+        block_page.remove_slot(0).unwrap();
+
+        // Remove the first slot again
+        let result = block_page.remove_slot(0);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_writable_block_page_fill_page() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        // Create a block page with u32 keys and (bool, f64) values
+        let mut block_page =
+            WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
+
+        // Fill the page with key-value pairs
+        for i in 0..block_page.num_slots() {
+            let key = tuple![i as u32];
+            let value = tuple![true, i as f64 / 3f64];
+            block_page.put_slot(i, key, value).unwrap();
+        }
+
+        // Read the key-value pairs back
+        for i in 0..block_page.num_slots() {
+            let key = tuple![i as u32];
+            let value = tuple![true, i as f64 / 3f64];
+            let read_key = block_page.key_at(i).unwrap();
+            let read_value = block_page.value_at(i).unwrap();
+
+            assert_eq!(read_key, key);
+            assert_eq!(read_value, value);
+        }
+    }
 }

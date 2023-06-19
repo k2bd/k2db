@@ -1,5 +1,6 @@
 use crate::dbms::types::{PageData, PageId, PAGE_SIZE};
 
+// TODO: Out of range error
 pub type PageError = ();
 
 pub trait IPage {
