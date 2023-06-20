@@ -2,7 +2,10 @@ use std::marker::PhantomData;
 
 use crate::dbms::{
     buffer::types::{ReadOnlyPage, WritablePage},
-    storage::{page::PageError, serialize::BytesSerialize},
+    storage::{
+        page::PageError,
+        serialize::{BytesSerialize, SerializeError},
+    },
 };
 
 use super::util::{calculate_block_page_layout, PageLayout};
@@ -33,6 +36,7 @@ pub trait IHashTableBlockPageWrite<KeyType: BytesSerialize, ValueType: BytesSeri
 #[derive(Debug)]
 pub enum HashTableBlockError {
     PageError(PageError),
+    SerializeError(SerializeError),
     SlotNotReadable,
     SlotOccupied,
 }
@@ -40,6 +44,12 @@ pub enum HashTableBlockError {
 impl From<PageError> for HashTableBlockError {
     fn from(e: PageError) -> Self {
         HashTableBlockError::PageError(e)
+    }
+}
+
+impl From<SerializeError> for HashTableBlockError {
+    fn from(e: SerializeError) -> Self {
+        HashTableBlockError::SerializeError(e)
     }
 }
 
@@ -90,7 +100,7 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         let key_bytes = self
             .page
             .read_data(key_address, KeyType::serialized_size())?;
-        Ok(KeyType::from_bytes(key_bytes))
+        Ok(KeyType::from_bytes(key_bytes)?)
     }
 
     fn read_value(&self, slot: usize) -> Result<ValueType, HashTableBlockError> {
@@ -103,7 +113,7 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         let value_bytes = self
             .page
             .read_data(value_address, ValueType::serialized_size())?;
-        Ok(ValueType::from_bytes(value_bytes))
+        Ok(ValueType::from_bytes(value_bytes)?)
     }
 
     fn _read_bit_block(
@@ -201,7 +211,7 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         let key_bytes = self
             .page
             .read_data(key_address, KeyType::serialized_size())?;
-        Ok(KeyType::from_bytes(key_bytes))
+        Ok(KeyType::from_bytes(key_bytes)?)
     }
 
     fn read_value(&self, slot: usize) -> Result<ValueType, HashTableBlockError> {
@@ -214,7 +224,7 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         let value_bytes = self
             .page
             .read_data(value_address, ValueType::serialized_size())?;
-        Ok(ValueType::from_bytes(value_bytes))
+        Ok(ValueType::from_bytes(value_bytes)?)
     }
 
     fn _read_bit_block(
@@ -238,13 +248,13 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
 
     fn write_key(&mut self, slot: usize, key: KeyType) -> Result<(), HashTableBlockError> {
         let key_address = self.key_address(slot);
-        let key_bytes = key.to_bytes();
+        let key_bytes = key.to_bytes()?;
         Ok(self.page.write_data(key_address, &key_bytes)?)
     }
 
     fn write_value(&mut self, slot: usize, value: ValueType) -> Result<(), HashTableBlockError> {
         let value_address = self.value_address(slot);
-        let value_bytes = value.to_bytes();
+        let value_bytes = value.to_bytes()?;
         Ok(self.page.write_data(value_address, &value_bytes)?)
     }
 

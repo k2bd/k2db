@@ -1,9 +1,22 @@
+#[derive(Debug, PartialEq, Eq)]
+pub enum SerializeError {
+    InvalidSize,
+    InvalidValue,
+}
+
 /// Trait for serializing and deserializing a struct to and from a fixed size
 /// byte array.
 pub trait BytesSerialize {
-    fn to_bytes(&self) -> Vec<u8>;
-    fn from_bytes(bytes: Vec<u8>) -> Self;
-    fn serialized_size() -> usize;
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError>;
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError>
+    where
+        Self: Sized;
+    fn serialized_size() -> usize
+    where
+        Self: Sized,
+    {
+        std::mem::size_of::<Self>()
+    }
 }
 
 // Macro will take a list of serializable types and create a recursive tuple
@@ -35,19 +48,22 @@ where
     H: BytesSerialize,
     T: BytesSerialize,
 {
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&self.0.to_bytes());
-        bytes.extend_from_slice(&self.1.to_bytes());
-        bytes
+        bytes.extend_from_slice(&self.0.to_bytes()?);
+        bytes.extend_from_slice(&self.1.to_bytes()?);
+        Ok(bytes)
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
+    fn from_bytes(bytes: Vec<u8>) -> Result<(H, T), SerializeError> {
         let h_size = H::serialized_size();
         let t_size = T::serialized_size();
+        if bytes.len() != h_size + t_size {
+            return Err(SerializeError::InvalidSize);
+        }
         let h_bytes = bytes[0..h_size].to_vec();
         let t_bytes = bytes[h_size..h_size + t_size].to_vec();
-        (H::from_bytes(h_bytes), T::from_bytes(t_bytes))
+        Ok((H::from_bytes(h_bytes)?, T::from_bytes(t_bytes)?))
     }
 
     fn serialized_size() -> usize {
@@ -56,206 +72,188 @@ where
 }
 
 impl BytesSerialize for () {
-    fn to_bytes(&self) -> Vec<u8> {
-        vec![]
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(vec![])
     }
 
-    fn from_bytes(_: Vec<u8>) -> Self {}
-
-    fn serialized_size() -> usize {
-        0
+    fn from_bytes(_: Vec<u8>) -> Result<Self, SerializeError> {
+        Ok(())
     }
 }
 
 impl BytesSerialize for u8 {
-    fn to_bytes(&self) -> Vec<u8> {
-        vec![*self]
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(vec![*self])
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        bytes[0]
-    }
-
-    fn serialized_size() -> usize {
-        1
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 // TODO: serialize/deserialize errors instead of panicking
 
 impl BytesSerialize for u16 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        u16::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        2
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for u32 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        u32::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        4
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for u64 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        u64::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        8
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for u128 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        u128::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        16
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for i8 {
-    fn to_bytes(&self) -> Vec<u8> {
-        vec![*self as u8]
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(vec![*self as u8])
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        i8::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        1
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for i16 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        i16::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        2
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for i32 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        i32::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        4
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for i64 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        i64::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        8
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for i128 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        i128::from_be_bytes(bytes.try_into().unwrap())
-    }
-
-    fn serialized_size() -> usize {
-        16
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for f32 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_bits().to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_bits().to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        f32::from_bits(u32::from_be_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn serialized_size() -> usize {
-        4
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for f64 {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_bits().to_be_bytes().to_vec()
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
+        Ok(self.to_bits().to_be_bytes().to_vec())
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        f64::from_bits(u64::from_be_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn serialized_size() -> usize {
-        8
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Self::from_be_bytes(bytes)),
+            Err(_) => Err(SerializeError::InvalidSize),
+        }
     }
 }
 
 impl BytesSerialize for bool {
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>, SerializeError> {
         if *self {
-            vec![1]
+            Ok(vec![1])
         } else {
-            vec![0]
+            Ok(vec![0])
         }
     }
 
-    fn from_bytes(bytes: Vec<u8>) -> Self {
+    fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError> {
         match bytes[0] {
-            0 => false,
-            1 => true,
-            _ => panic!("Invalid bool value"),
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(SerializeError::InvalidValue),
         }
-    }
-
-    fn serialized_size() -> usize {
-        1
     }
 }
 
@@ -267,13 +265,13 @@ mod tests {
     #[rstest]
     #[case((), vec![])]
     fn test_unit_to_bytes(#[case] input: (), #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
     #[case(vec![], ())]
     fn test_unit_from_bytes(#[case] input: Vec<u8>, #[case] expected: ()) {
-        assert_eq!(<()>::from_bytes(input), expected);
+        assert_eq!(<()>::from_bytes(input), Ok(expected));
     }
 
     #[rstest]
@@ -286,7 +284,7 @@ mod tests {
     #[case(1u8, vec![1])]
     #[case(255u8, vec![255])]
     fn test_u8_to_bytes(#[case] input: u8, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -294,7 +292,12 @@ mod tests {
     #[case(vec![1], 1u8)]
     #[case(vec![255], 255u8)]
     fn test_u8_from_bytes(#[case] input: Vec<u8>, #[case] expected: u8) {
-        assert_eq!(u8::from_bytes(input), expected);
+        assert_eq!(u8::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_u8_from_invalid_bytes() {
+        assert_eq!(u8::from_bytes(vec![0, 0]), Err(SerializeError::InvalidSize));
     }
 
     #[rstest]
@@ -309,7 +312,7 @@ mod tests {
     #[case(256u16, vec![1, 0])]
     #[case(65535u16, vec![255, 255])]
     fn test_u16_to_bytes(#[case] input: u16, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -319,7 +322,15 @@ mod tests {
     #[case(vec![1, 0], 256u16)]
     #[case(vec![255, 255], 65535u16)]
     fn test_u16_from_bytes(#[case] input: Vec<u8>, #[case] expected: u16) {
-        assert_eq!(u16::from_bytes(input), expected);
+        assert_eq!(u16::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_u16_from_invalid_bytes() {
+        assert_eq!(
+            u16::from_bytes(vec![0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -338,7 +349,7 @@ mod tests {
     #[case(16777216u32, vec![1, 0, 0, 0])]
     #[case(4294967295u32, vec![255, 255, 255, 255])]
     fn test_u32_to_bytes(#[case] input: u32, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -352,7 +363,15 @@ mod tests {
     #[case(vec![1, 0, 0, 0], 16777216u32)]
     #[case(vec![255, 255, 255, 255], 4294967295u32)]
     fn test_u32_from_bytes(#[case] input: Vec<u8>, #[case] expected: u32) {
-        assert_eq!(u32::from_bytes(input), expected);
+        assert_eq!(u32::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_u32_from_invalid_bytes() {
+        assert_eq!(
+            u32::from_bytes(vec![0, 0, 0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -379,7 +398,7 @@ mod tests {
     #[case(72057594037927936u64, vec![1, 0, 0, 0, 0, 0, 0, 0])]
     #[case(18446744073709551615u64, vec![255, 255, 255, 255, 255, 255, 255, 255])]
     fn test_u64_to_bytes(#[case] input: u64, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -402,7 +421,15 @@ mod tests {
     #[case(vec![1, 0, 0, 0, 0, 0, 0, 0], 72057594037927936u64)]
     #[case(vec![255, 255, 255, 255, 255, 255, 255, 255], 18446744073709551615u64)]
     fn test_u64_from_bytes(#[case] input: Vec<u8>, #[case] expected: u64) {
-        assert_eq!(u64::from_bytes(input), expected);
+        assert_eq!(u64::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_u64_from_invalid_bytes() {
+        assert_eq!(
+            u64::from_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -417,17 +444,25 @@ mod tests {
     #[case(18446744073709551616u128, vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])]
     #[case(u128::MAX, vec![255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255])]
     fn test_u128_to_bytes(#[case] input: u128, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
-    #[case(vec![0, 0, 0, 0, 0, 0, 0, 0, 00, 0, 0, 0, 0, 0, 0, 0], 0u128)]
+    #[case(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0u128)]
     #[case(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 1u128)]
     #[case(vec![0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255], 18446744073709551615u128)]
     #[case(vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], 18446744073709551616u128)]
     #[case(vec![255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255], u128::MAX)]
     fn test_u128_from_bytes(#[case] input: Vec<u8>, #[case] expected: u128) {
-        assert_eq!(u128::from_bytes(input), expected);
+        assert_eq!(u128::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_u128_from_invalid_bytes() {
+        assert_eq!(
+            u128::from_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -442,7 +477,7 @@ mod tests {
     #[case(i8::MAX, vec![127])]
     #[case(i8::MIN, vec![128])]
     fn test_i8_to_bytes(#[case] input: i8, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -452,12 +487,17 @@ mod tests {
     #[case(vec![127], i8::MAX)]
     #[case(vec![128], i8::MIN)]
     fn test_i8_from_bytes(#[case] input: Vec<u8>, #[case] expected: i8) {
-        assert_eq!(i8::from_bytes(input), expected);
+        assert_eq!(i8::from_bytes(input), Ok(expected));
     }
 
     #[rstest]
     fn test_i8_serialized_size() {
         assert_eq!(i8::serialized_size(), 1);
+    }
+
+    #[rstest]
+    fn test_i8_from_invalid_bytes() {
+        assert_eq!(i8::from_bytes(vec![0, 0]), Err(SerializeError::InvalidSize));
     }
 
     #[rstest]
@@ -467,7 +507,7 @@ mod tests {
     #[case(i16::MAX, vec![127, 255])]
     #[case(i16::MIN, vec![128, 0])]
     fn test_i16_to_bytes(#[case] input: i16, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -477,7 +517,15 @@ mod tests {
     #[case(vec![127, 255], i16::MAX)]
     #[case(vec![128, 0], i16::MIN)]
     fn test_i16_from_bytes(#[case] input: Vec<u8>, #[case] expected: i16) {
-        assert_eq!(i16::from_bytes(input), expected);
+        assert_eq!(i16::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_i16_from_invalid_bytes() {
+        assert_eq!(
+            i16::from_bytes(vec![0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -492,7 +540,7 @@ mod tests {
     #[case(i32::MAX, vec![127, 255, 255, 255])]
     #[case(i32::MIN, vec![128, 0, 0, 0])]
     fn test_i32_to_bytes(#[case] input: i32, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -502,7 +550,15 @@ mod tests {
     #[case(vec![127, 255, 255, 255], i32::MAX)]
     #[case(vec![128, 0, 0, 0], i32::MIN)]
     fn test_i32_from_bytes(#[case] input: Vec<u8>, #[case] expected: i32) {
-        assert_eq!(i32::from_bytes(input), expected);
+        assert_eq!(i32::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_i32_from_invalid_bytes() {
+        assert_eq!(
+            i32::from_bytes(vec![0, 0, 0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -517,7 +573,7 @@ mod tests {
     #[case(i64::MAX, vec![127, 255, 255, 255, 255, 255, 255, 255])]
     #[case(i64::MIN, vec![128, 0, 0, 0, 0, 0, 0, 0])]
     fn test_i64_to_bytes(#[case] input: i64, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -527,7 +583,15 @@ mod tests {
     #[case(vec![127, 255, 255, 255, 255, 255, 255, 255], i64::MAX)]
     #[case(vec![128, 0, 0, 0, 0, 0, 0, 0], i64::MIN)]
     fn test_i64_from_bytes(#[case] input: Vec<u8>, #[case] expected: i64) {
-        assert_eq!(i64::from_bytes(input), expected);
+        assert_eq!(i64::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_i64_from_invalid_bytes() {
+        assert_eq!(
+            i64::from_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -542,7 +606,7 @@ mod tests {
     #[case(i128::MAX, vec![127, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255])]
     #[case(i128::MIN, vec![128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])]
     fn test_i128_to_bytes(#[case] input: i128, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -552,7 +616,15 @@ mod tests {
     #[case(vec![127, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255], i128::MAX)]
     #[case(vec![128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], i128::MIN)]
     fn test_i128_from_bytes(#[case] input: Vec<u8>, #[case] expected: i128) {
-        assert_eq!(i128::from_bytes(input), expected);
+        assert_eq!(i128::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_i128_from_invalid_bytes() {
+        assert_eq!(
+            i128::from_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -566,7 +638,7 @@ mod tests {
     #[case(f32::MAX, vec![127, 127, 255, 255])]
     #[case(f32::MIN, vec![255, 127, 255, 255])]
     fn test_f32_to_bytes(#[case] input: f32, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -575,7 +647,15 @@ mod tests {
     #[case(vec![127, 127, 255, 255], f32::MAX)]
     #[case(vec![255, 127, 255, 255], f32::MIN)]
     fn test_f32_from_bytes(#[case] input: Vec<u8>, #[case] expected: f32) {
-        assert_eq!(f32::from_bytes(input), expected);
+        assert_eq!(f32::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_f32_from_invalid_bytes() {
+        assert_eq!(
+            f32::from_bytes(vec![0, 0, 0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -589,7 +669,7 @@ mod tests {
     #[case(f64::MAX, vec![127, 239, 255, 255, 255, 255, 255, 255])]
     #[case(f64::MIN, vec![255, 239, 255, 255, 255, 255, 255, 255])]
     fn test_f64_to_bytes(#[case] input: f64, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -598,7 +678,15 @@ mod tests {
     #[case(vec![127, 239, 255, 255, 255, 255, 255, 255], f64::MAX)]
     #[case(vec![255, 239, 255, 255, 255, 255, 255, 255], f64::MIN)]
     fn test_f64_from_bytes(#[case] input: Vec<u8>, #[case] expected: f64) {
-        assert_eq!(f64::from_bytes(input), expected);
+        assert_eq!(f64::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_f64_from_invalid_bytes() {
+        assert_eq!(
+            f64::from_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Err(SerializeError::InvalidSize)
+        );
     }
 
     #[rstest]
@@ -610,20 +698,19 @@ mod tests {
     #[case(true, vec![1])]
     #[case(false, vec![0])]
     fn test_bool_to_bytes(#[case] input: bool, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
     #[case(vec![1], true)]
     #[case(vec![0], false)]
     fn test_bool_from_bytes(#[case] input: Vec<u8>, #[case] expected: bool) {
-        assert_eq!(bool::from_bytes(input), expected);
+        assert_eq!(bool::from_bytes(input), Ok(expected));
     }
 
     #[rstest]
-    #[should_panic]
-    fn test_bool_panic() {
-        bool::from_bytes(vec![3]);
+    fn test_bool_invalid_value() {
+        assert_eq!(bool::from_bytes(vec![3]), Err(SerializeError::InvalidValue));
     }
 
     #[rstest]
@@ -637,7 +724,7 @@ mod tests {
     #[case(tuple![10u8, true, false, (), 1.234f32], vec![10, 1, 0, 63, 157, 243, 182])]
     #[case(tuple![(), (), (), (), ()], vec![])]
     fn test_compound_to_bytes(#[case] input: impl BytesSerialize, #[case] expected: Vec<u8>) {
-        assert_eq!(input.to_bytes(), expected);
+        assert_eq!(input.to_bytes(), Ok(expected));
     }
 
     #[rstest]
@@ -647,7 +734,7 @@ mod tests {
         let input = vec![1, 2];
         let expected = tuple![1u8, 2u8];
 
-        assert_eq!(TType::from_bytes(input), expected);
+        assert_eq!(TType::from_bytes(input), Ok(expected));
     }
 
     #[rstest]
@@ -657,7 +744,7 @@ mod tests {
         let input = vec![1, 2, 3];
         let expected = tuple![1u8, 2u8, 3u8];
 
-        assert_eq!(TType::from_bytes(input), expected);
+        assert_eq!(TType::from_bytes(input), Ok(expected));
     }
 
     #[rstest]
@@ -667,7 +754,7 @@ mod tests {
         let input = vec![10, 1, 0, 63, 157, 243, 182];
         let expected = tuple![10u8, true, false, (), 1.234f32];
 
-        assert_eq!(TType::from_bytes(input), expected);
+        assert_eq!(TType::from_bytes(input), Ok(expected));
     }
 
     #[rstest]
@@ -677,7 +764,16 @@ mod tests {
         let input = vec![];
         let expected = tuple![(), (), (), (), ()];
 
-        assert_eq!(TType::from_bytes(input), expected);
+        assert_eq!(TType::from_bytes(input), Ok(expected));
+    }
+
+    #[rstest]
+    fn test_bytes_to_compound_invalid_size() {
+        type TType = tuple_type![u8, u8, u8];
+
+        let input = vec![1, 2, 3, 4];
+
+        assert_eq!(TType::from_bytes(input), Err(SerializeError::InvalidSize));
     }
 
     #[rstest]
