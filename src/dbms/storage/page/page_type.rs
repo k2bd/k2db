@@ -1,19 +1,21 @@
-pub const PAGE_SIZE: usize = 4096;
+use crate::dbms::types::{PageData, PageId, PAGE_SIZE};
 
-pub type PageData = [u8; PAGE_SIZE];
-
+// TODO: Out of range error
 pub type PageError = ();
 
 pub trait IPage {
     /// Get a copy of the page's data
     fn get_data(&self) -> Result<PageData, PageError>;
+    /// Get a copy of a slice of the page's data, starting from the given offset
+    /// in bytes and with the given length
+    fn read_data(&self, offset: usize, len: usize) -> Result<Vec<u8>, PageError>;
     /// Set the whole content of the page, and set the page to dirty
     fn set_data(&mut self, data: PageData) -> Result<(), PageError>;
-    /// Write a slice of the page, starting from the given offset, and set the
-    /// page to dirty
+    /// Write a slice of the page, starting from the given offset in bytes,
+    /// and set the page to dirty
     fn write_data(&mut self, offset: usize, data: &[u8]) -> Result<(), PageError>;
     /// Get the page ID
-    fn get_page_id(&self) -> Result<Option<usize>, PageError>;
+    fn get_page_id(&self) -> Result<Option<PageId>, PageError>;
     /// Get whether the page is dirty
     fn is_dirty(&self) -> Result<bool, PageError>;
     /// Set the page to dirty
@@ -29,19 +31,19 @@ pub trait IPage {
     /// Clear the page, e.g. when initialized as new
     fn clear(&mut self) -> Result<(), PageError>;
     /// Full overwrite page, e.g. when a page is fetched from disk
-    fn overwrite(&mut self, page_id: Option<usize>, data: PageData) -> Result<(), PageError>;
+    fn overwrite(&mut self, page_id: Option<PageId>, data: PageData) -> Result<(), PageError>;
 }
 
 #[derive(Clone)]
 pub struct Page {
     data: PageData,
-    page_id: Option<usize>,
+    page_id: Option<PageId>,
     pin_count: usize,
     is_dirty: bool,
 }
 
 impl Page {
-    pub fn new(page_id: Option<usize>) -> Page {
+    pub fn new(page_id: Option<PageId>) -> Page {
         Page {
             data: [0; PAGE_SIZE],
             page_id,
@@ -56,6 +58,10 @@ impl IPage for Page {
         Ok(self.data)
     }
 
+    fn read_data(&self, offset: usize, len: usize) -> Result<Vec<u8>, PageError> {
+        Ok(self.data[offset..offset + len].to_vec())
+    }
+
     fn set_data(&mut self, data: PageData) -> Result<(), PageError> {
         self.data = data;
         self.is_dirty = true;
@@ -68,7 +74,7 @@ impl IPage for Page {
         Ok(())
     }
 
-    fn get_page_id(&self) -> Result<Option<usize>, PageError> {
+    fn get_page_id(&self) -> Result<Option<PageId>, PageError> {
         Ok(self.page_id)
     }
 
@@ -110,7 +116,7 @@ impl IPage for Page {
         Ok(())
     }
 
-    fn overwrite(&mut self, page_id: Option<usize>, data: PageData) -> Result<(), PageError> {
+    fn overwrite(&mut self, page_id: Option<PageId>, data: PageData) -> Result<(), PageError> {
         self.page_id = page_id;
         self.data = data;
         self.pin_count = 0;

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::dbms::storage::page::{PageData, PAGE_SIZE};
+use crate::dbms::types::{PageData, PageId, PAGE_SIZE};
 
 use super::{DiskManagerError, IDiskManager};
 
@@ -8,14 +8,14 @@ use super::{DiskManagerError, IDiskManager};
 /// Also exposes the underlying data structures for inspection in tests.
 pub struct InMemoryDiskManager {
     /// page_id -> page_data
-    pub pages: HashMap<usize, Vec<u8>>,
+    pub pages: HashMap<PageId, Vec<u8>>,
     /// log_id -> log_data
     pub logs: HashMap<usize, Vec<u8>>,
-    pub next_page_id: usize,
+    pub next_page_id: PageId,
 }
 
 impl InMemoryDiskManager {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             pages: HashMap::new(),
@@ -26,7 +26,7 @@ impl InMemoryDiskManager {
 }
 
 impl IDiskManager for InMemoryDiskManager {
-    fn write_page(&mut self, page_id: usize, page: &[u8]) -> Result<(), DiskManagerError> {
+    fn write_page(&mut self, page_id: PageId, page: &[u8]) -> Result<(), DiskManagerError> {
         // Must allocate page before writing to it
         if !self.pages.contains_key(&page_id) {
             return Err(DiskManagerError::PageNotFound);
@@ -35,7 +35,7 @@ impl IDiskManager for InMemoryDiskManager {
         Ok(())
     }
 
-    fn read_page(&self, page_id: usize) -> Result<PageData, DiskManagerError> {
+    fn read_page(&self, page_id: PageId) -> Result<PageData, DiskManagerError> {
         let page = match self.pages.get(&page_id) {
             Some(page) => page,
             None => return Err(DiskManagerError::PageNotFound),
@@ -53,14 +53,14 @@ impl IDiskManager for InMemoryDiskManager {
         todo!()
     }
 
-    fn allocate_page(&mut self) -> Result<usize, DiskManagerError> {
+    fn allocate_page(&mut self) -> Result<PageId, DiskManagerError> {
         let page_id = self.next_page_id;
         self.next_page_id += 1;
         self.pages.insert(page_id, vec![0u8; PAGE_SIZE]);
         Ok(page_id)
     }
 
-    fn deallocate_page(&mut self, page_id: usize) -> Result<(), DiskManagerError> {
+    fn deallocate_page(&mut self, page_id: PageId) -> Result<(), DiskManagerError> {
         self.pages.remove(&page_id);
         Ok(())
     }

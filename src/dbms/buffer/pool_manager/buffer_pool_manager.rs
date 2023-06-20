@@ -1,9 +1,13 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
-use crate::dbms::buffer::replacer::{BufferPoolReplacerError, IBufferPoolReplacer};
-use crate::dbms::storage::disk::{DiskManagerError, IDiskManager};
-use crate::dbms::storage::page::{IPage, Page, PageError, PAGE_SIZE};
+use crate::dbms::buffer::replacer::BufferPoolReplacerError;
+use crate::dbms::buffer::types::{
+    DiskManagerGeneric, PageGeneric, ReadOnlyPage, ReplacerGeneric, WritablePage,
+};
+use crate::dbms::storage::disk::DiskManagerError;
+use crate::dbms::storage::page::{Page, PageError};
+use crate::dbms::types::{PageId, PAGE_SIZE};
 
 #[derive(Debug)]
 pub enum BufferPoolManagerError {
@@ -36,37 +40,30 @@ impl From<DiskManagerError> for BufferPoolManagerError {
     }
 }
 
-type ReadOnlyPage<'a> = RwLockReadGuard<'a, PageGeneric>;
-type WritablePage<'a> = RwLockWriteGuard<'a, PageGeneric>;
-
 pub trait IBufferPoolManager {
     /// Fetch the requested page as readable from the buffer pool.
-    fn fetch_page(&self, page_id: usize) -> Result<ReadOnlyPage, BufferPoolManagerError>;
+    fn fetch_page(&self, page_id: PageId) -> Result<ReadOnlyPage, BufferPoolManagerError>;
     /// Fetch the requested page as writable from the buffer pool.
-    fn fetch_page_writable(&self, page_id: usize) -> Result<WritablePage, BufferPoolManagerError>;
+    fn fetch_page_writable(&self, page_id: PageId) -> Result<WritablePage, BufferPoolManagerError>;
     /// Creates a new page in the buffer pool, returning it as writable.
     fn new_page(&self) -> Result<WritablePage, BufferPoolManagerError>;
     /// Unpin the target page from the buffer pool.
-    fn unpin_page(&self, page_id: usize, mark_dirty: bool) -> Result<(), BufferPoolManagerError>;
+    fn unpin_page(&self, page_id: PageId, mark_dirty: bool) -> Result<(), BufferPoolManagerError>;
     /// Flushes the target page to disk.
-    fn flush_page(&self, page_id: usize) -> Result<(), BufferPoolManagerError>;
+    fn flush_page(&self, page_id: PageId) -> Result<(), BufferPoolManagerError>;
     /// Deletes a page from the buffer pool.
-    fn delete_page(&self, page_id: usize) -> Result<(), BufferPoolManagerError>;
+    fn delete_page(&self, page_id: PageId) -> Result<(), BufferPoolManagerError>;
     /// Flushes all the pages in the buffer pool to disk.
     fn flush_all_pages(&self) -> Result<(), BufferPoolManagerError>;
 }
 
-type ReplacerGeneric = Box<dyn IBufferPoolReplacer + Send + Sync>;
-type DiskManagerGeneric = Box<dyn IDiskManager + Send + Sync>;
-type PageGeneric = Box<dyn IPage + Send + Sync>;
-
 #[derive(Clone)]
-struct BufferPoolManager {
+pub struct BufferPoolManager {
     replacer: Arc<RwLock<ReplacerGeneric>>,
     disk_manager: Arc<RwLock<DiskManagerGeneric>>,
     /// page_id -> frame_id
     // Latch on the whole hashmap
-    page_table: Arc<RwLock<HashMap<usize, usize>>>,
+    page_table: Arc<RwLock<HashMap<PageId, usize>>>,
     // N.B. Latch on the whole array
     free_frames: Arc<RwLock<Vec<usize>>>,
     // N.B. Latch on each individual page, not the array itself
@@ -75,7 +72,7 @@ struct BufferPoolManager {
 
 impl BufferPoolManager {
     #[allow(dead_code)]
-    fn new(
+    pub fn new(
         pool_size: usize,
         replacer: ReplacerGeneric,
         disk_manager: DiskManagerGeneric,
@@ -148,10 +145,10 @@ impl BufferPoolManager {
     fn swap_frame(
         &self,
         frame_id: usize,
-        new_page_id: usize,
+        new_page_id: PageId,
         disk_manager: &mut RwLockWriteGuard<DiskManagerGeneric>,
         replacer: &mut RwLockWriteGuard<ReplacerGeneric>,
-        page_table: &mut RwLockWriteGuard<HashMap<usize, usize>>,
+        page_table: &mut RwLockWriteGuard<HashMap<PageId, usize>>,
         page: &mut RwLockWriteGuard<PageGeneric>,
     ) -> Result<(), BufferPoolManagerError> {
         if let Some(old_page_id) = page.get_page_id().unwrap() {
@@ -167,7 +164,7 @@ impl BufferPoolManager {
     }
 
     /// Fetch a page, from disk if needed, and return its frame ID
-    fn fetch_page_frame(&self, page_id: usize) -> Result<usize, BufferPoolManagerError> {
+    fn fetch_page_frame(&self, page_id: PageId) -> Result<usize, BufferPoolManagerError> {
         // 1.     Search the page table for the requested page (P).
         let mut page_table = self.page_table.write().unwrap();
         let mut replacer = self.replacer.write().unwrap();
@@ -211,12 +208,12 @@ impl BufferPoolManager {
 }
 
 impl IBufferPoolManager for BufferPoolManager {
-    fn fetch_page(&self, page_id: usize) -> Result<ReadOnlyPage, BufferPoolManagerError> {
+    fn fetch_page(&self, page_id: PageId) -> Result<ReadOnlyPage, BufferPoolManagerError> {
         let frame_id = self.fetch_page_frame(page_id)?;
         Ok(self.pages[frame_id].read().unwrap())
     }
 
-    fn fetch_page_writable(&self, page_id: usize) -> Result<WritablePage, BufferPoolManagerError> {
+    fn fetch_page_writable(&self, page_id: PageId) -> Result<WritablePage, BufferPoolManagerError> {
         let frame_id = self.fetch_page_frame(page_id)?;
         Ok(self.pages[frame_id].write().unwrap())
     }
@@ -264,7 +261,7 @@ impl IBufferPoolManager for BufferPoolManager {
         Ok(page_to_overwrite)
     }
 
-    fn unpin_page(&self, page_id: usize, mark_dirty: bool) -> Result<(), BufferPoolManagerError> {
+    fn unpin_page(&self, page_id: PageId, mark_dirty: bool) -> Result<(), BufferPoolManagerError> {
         let page_table = self.page_table.read().unwrap();
         let mut replacer = self.replacer.write().unwrap();
 
@@ -286,7 +283,7 @@ impl IBufferPoolManager for BufferPoolManager {
         }
     }
 
-    fn flush_page(&self, page_id: usize) -> Result<(), BufferPoolManagerError> {
+    fn flush_page(&self, page_id: PageId) -> Result<(), BufferPoolManagerError> {
         let mut disk_manager = self.disk_manager.write().unwrap();
         let page_table = self.page_table.read().unwrap();
 
@@ -299,7 +296,7 @@ impl IBufferPoolManager for BufferPoolManager {
         }
     }
 
-    fn delete_page(&self, page_id: usize) -> Result<(), BufferPoolManagerError> {
+    fn delete_page(&self, page_id: PageId) -> Result<(), BufferPoolManagerError> {
         let mut disk_manager = self.disk_manager.write().unwrap();
         let mut free_frames = self.free_frames.write().unwrap();
         let mut page_table = self.page_table.write().unwrap();
@@ -351,15 +348,8 @@ impl IBufferPoolManager for BufferPoolManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dbms::buffer::replacer::clock_replacer::ClockReplacer;
-    use crate::dbms::storage::disk::testing::InMemoryDiskManager;
+    use crate::dbms::buffer::pool_manager::testing::create_testing_pool_manager;
     use rstest::*;
-
-    fn create_testing_pool_manager(pool_size: usize) -> BufferPoolManager {
-        let disk_manager = InMemoryDiskManager::new();
-        let replacer = ClockReplacer::new(pool_size);
-        BufferPoolManager::new(pool_size, Box::new(replacer), Box::new(disk_manager))
-    }
 
     #[rstest]
     #[case(1)]
@@ -423,7 +413,7 @@ mod tests {
             let buffer_pool_manager = buffer_pool_manager.clone();
             threads.push(std::thread::spawn(move || {
                 for _ in 0..100 {
-                    let page_id: usize;
+                    let page_id: PageId;
                     loop {
                         match buffer_pool_manager.new_page() {
                             Ok(mut page) => {
@@ -468,7 +458,7 @@ mod tests {
     fn test_delete_page(#[case] pool_size: usize) {
         let buffer_pool_manager = create_testing_pool_manager(pool_size);
 
-        let mut page_ids = Vec::<usize>::new();
+        let mut page_ids = Vec::<PageId>::new();
 
         for _ in 0..pool_size {
             let page = buffer_pool_manager.new_page();
@@ -555,7 +545,7 @@ mod tests {
     fn test_flush_page() {
         let buffer_pool_manager = create_testing_pool_manager(10);
 
-        let page_id: usize;
+        let page_id: PageId;
         {
             let page = buffer_pool_manager.new_page();
             assert!(page.is_ok());
@@ -600,7 +590,7 @@ mod tests {
     fn test_flush_all_pages() {
         let buffer_pool_manager = create_testing_pool_manager(10);
 
-        let mut page_ids = Vec::<usize>::new();
+        let mut page_ids = Vec::<PageId>::new();
 
         for _ in 0..10 {
             let page = buffer_pool_manager.new_page();
@@ -653,7 +643,7 @@ mod tests {
     fn test_delete_page_in_use() {
         let buffer_pool_manager = create_testing_pool_manager(10);
 
-        let page_id: usize;
+        let page_id: PageId;
         {
             let page = buffer_pool_manager.new_page();
             assert!(page.is_ok());
