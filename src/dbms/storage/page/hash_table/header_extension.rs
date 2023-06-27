@@ -28,9 +28,11 @@ pub trait IHashTableHeaderExtensionPageRead {
     /// Get the page ID of the root header page
     fn get_header_page_id(&self) -> Result<PageId, HashTableHeaderExtensionError>;
     /// Get the page ID of the previous extension page, if there is one
-    fn get_previous_extension_page(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError>;
+    fn get_previous_extension_page_id(
+        &self,
+    ) -> Result<Option<PageId>, HashTableHeaderExtensionError>;
     /// Get the page ID of the next extension page, if there is one
-    fn get_next_extension_page(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError>;
+    fn get_next_extension_page_id(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError>;
     /// Get the page ID at the given index
     fn get_block_page_id(
         &self,
@@ -80,14 +82,16 @@ impl IHashTableHeaderExtensionPageRead for ReadOnlyHashTableHeaderExtensionPage<
         self.read_single_at_offset(HEADER_PAGE_ID_OFFSET_BYTES)
     }
 
-    fn get_previous_extension_page(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError> {
+    fn get_previous_extension_page_id(
+        &self,
+    ) -> Result<Option<PageId>, HashTableHeaderExtensionError> {
         match self.read_single_at_offset(PREVIOUS_EXTENSION_PAGE_OFFSET_BYTES)? {
             NULL_PAGE_ID => Ok(None),
             p => Ok(Some(p)),
         }
     }
 
-    fn get_next_extension_page(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError> {
+    fn get_next_extension_page_id(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError> {
         match self.read_single_at_offset(NEXT_EXTENSION_PAGE_OFFSET_BYTES)? {
             NULL_PAGE_ID => Ok(None),
             p => Ok(Some(p)),
@@ -130,7 +134,7 @@ impl<'a> WritableHashTableHeaderExtensionPage<'a> {
         Ok(())
     }
 
-    /// Initialize a header page to contain its page ID
+    /// Initialize a new header extension page
     fn initialize(
         &mut self,
         header_page_id: PageId,
@@ -152,14 +156,16 @@ impl IHashTableHeaderExtensionPageRead for WritableHashTableHeaderExtensionPage<
         self.read_single_at_offset(HEADER_PAGE_ID_OFFSET_BYTES)
     }
 
-    fn get_previous_extension_page(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError> {
+    fn get_previous_extension_page_id(
+        &self,
+    ) -> Result<Option<PageId>, HashTableHeaderExtensionError> {
         match self.read_single_at_offset(PREVIOUS_EXTENSION_PAGE_OFFSET_BYTES)? {
             NULL_PAGE_ID => Ok(None),
             p => Ok(Some(p)),
         }
     }
 
-    fn get_next_extension_page(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError> {
+    fn get_next_extension_page_id(&self) -> Result<Option<PageId>, HashTableHeaderExtensionError> {
         match self.read_single_at_offset(NEXT_EXTENSION_PAGE_OFFSET_BYTES)? {
             NULL_PAGE_ID => Ok(None),
             p => Ok(Some(p)),
@@ -215,6 +221,199 @@ impl IHashTableHeaderExtensionPageWrite for WritableHashTableHeaderExtensionPage
         match page_id {
             Some(p) => self.write_single_at_offset(pos, p),
             None => self.write_single_at_offset(pos, NULL_PAGE_ID),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::dbms::buffer::pool_manager::{
+        testing::create_testing_pool_manager, IBufferPoolManager,
+    };
+
+    use super::*;
+    use rstest::*;
+
+    #[rstest]
+    fn test_writable_extension_page_set_header_page_id() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+
+        ext_page.set_header_page_id(123).unwrap();
+
+        let page_id = ext_page.get_header_page_id().unwrap();
+        assert_eq!(page_id, 123);
+    }
+
+    #[rstest]
+    #[case(Some(123))]
+    #[case(None)]
+    fn test_writable_extension_page_set_previous_extension_page_id(
+        #[case] ext_page_id: Option<PageId>,
+    ) {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+
+        ext_page.set_previous_extension_page_id(Some(999)).unwrap();
+
+        ext_page
+            .set_previous_extension_page_id(ext_page_id)
+            .unwrap();
+
+        let page_id = ext_page.get_previous_extension_page_id().unwrap();
+        assert_eq!(page_id, ext_page_id);
+    }
+
+    #[rstest]
+    #[case(Some(123))]
+    #[case(None)]
+    fn test_writable_extension_page_set_next_extension_page_id(
+        #[case] ext_page_id: Option<PageId>,
+    ) {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+
+        ext_page.set_next_extension_page_id(Some(999)).unwrap();
+
+        ext_page.set_next_extension_page_id(ext_page_id).unwrap();
+
+        let page_id = ext_page.get_next_extension_page_id().unwrap();
+        assert_eq!(page_id, ext_page_id);
+    }
+
+    #[rstest]
+    #[case(Some(123))]
+    #[case(None)]
+    fn test_writable_extension_page_set_block_page_id(#[case] ext_page_id: Option<PageId>) {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+
+        ext_page.set_block_page_id(100, Some(999)).unwrap();
+
+        ext_page.set_block_page_id(100, ext_page_id).unwrap();
+
+        let page_id = ext_page.get_block_page_id(100).unwrap();
+        assert_eq!(page_id, ext_page_id);
+    }
+
+    #[rstest]
+    #[case(Some(123), Some(456))]
+    #[case(Some(123), None)]
+    #[case(None, Some(456))]
+    #[case(None, None)]
+    fn test_writable_extension_page_initialize(
+        #[case] prev_ext_page_id: Option<PageId>,
+        #[case] next_ext_page_id: Option<PageId>,
+    ) {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+
+        ext_page
+            .initialize(999, prev_ext_page_id, next_ext_page_id)
+            .unwrap();
+
+        assert_eq!(ext_page.get_header_page_id().unwrap(), 999);
+        assert_eq!(
+            ext_page.get_next_extension_page_id().unwrap(),
+            next_ext_page_id
+        );
+        assert_eq!(
+            ext_page.get_previous_extension_page_id().unwrap(),
+            prev_ext_page_id
+        );
+        assert_eq!(ext_page.get_block_page_id(100).unwrap(), None);
+    }
+
+    #[rstest]
+    fn test_threaded_extension_page() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        {
+            for i in 0..11 {
+                {
+                    let _p = pool_manager.new_page().unwrap();
+                }
+                pool_manager.unpin_page(i, false).unwrap();
+            }
+        }
+
+        let mut write_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let bpm = pool_manager.clone();
+                write_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page_writable(i).unwrap();
+                        let mut writer = WritableHashTableHeaderExtensionPage { page };
+
+                        writer.initialize(i, None, Some(i * 2)).unwrap();
+                        writer.set_block_page_id(100, Some(i * 3)).unwrap();
+                    }
+                    bpm.unpin_page(i, true).unwrap();
+                }));
+            }
+        }
+
+        for thread in write_threads {
+            thread.join().unwrap();
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let bpm = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+
+                        assert_eq!(reader.get_header_page_id().unwrap(), i);
+                    }
+                    bpm.unpin_page(i, false).unwrap();
+                }));
+                let bpm = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+
+                        assert_eq!(reader.get_previous_extension_page_id().unwrap(), None);
+                    }
+                    bpm.unpin_page(i, false).unwrap();
+                }));
+                let bpm = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+
+                        assert_eq!(reader.get_next_extension_page_id().unwrap(), Some(i * 2));
+                    }
+                    bpm.unpin_page(i, false).unwrap();
+                }));
+                let bpm = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+
+                        assert_eq!(reader.get_block_page_id(100).unwrap(), Some(i * 3));
+                    }
+                    bpm.unpin_page(i, false).unwrap();
+                }));
+            }
         }
     }
 }
