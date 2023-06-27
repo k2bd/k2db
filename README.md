@@ -18,12 +18,23 @@ The goal of this repo is for me to learn about database internals and DBMS devel
   - Task 2 (WIP)
 
 
+## Dependencies
+
+This project aims to have minimal external main dependencies, with exceptions mainly for things that are necessary to build a DBMS but are out of scope for my learning objectives.
+This includes for example the specific hash function used in the hash table implementation (though the hash table implementation is itself in scope and is written from scratch).
+
+
 ## Resources
 
 [The BusTub source repo as of a 2019 commit](https://github.com/cmu-db/bustub/tree/feaf3245bc9e09f4e51e57279f342915f5592674)
 
-[An example solution to the whole project in C++](https://github.com/Sorosliu1029/Database-Systems/tree/master)
+[An example solution of the whole project in C++](https://github.com/xiaoshuai98/bustub)
 
-[toyDB](https://github.com/erikgrinaker/toydb), a distributed sql database written in Rust
 
-[mini-db](https://github.com/kw7oe/mini-db), a relational database system built in Rust
+### Some other DBMSs written in Rust
+
+[toyDB](https://github.com/erikgrinaker/toydb), a distributed sql database
+
+[mini-db](https://github.com/kw7oe/mini-db), another relational database system learning project
+
+[OxidSQL](https://github.com/mzinsmeister/OxidSQL), a WIP SQL database

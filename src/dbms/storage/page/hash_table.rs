@@ -1,3 +1,4 @@
-pub mod block;
-pub mod header;
+mod block;
+mod header;
+pub mod table;
 mod util;

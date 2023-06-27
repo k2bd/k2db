@@ -610,8 +610,11 @@ mod tests {
         let pool_manager = create_testing_pool_manager(100);
 
         {
-            for _ in 0..11 {
-                let _p = pool_manager.new_page().unwrap();
+            for i in 0..11 {
+                {
+                    let _p = pool_manager.new_page().unwrap();
+                }
+                pool_manager.unpin_page(i, false).unwrap();
             }
         }
 
@@ -620,26 +623,32 @@ mod tests {
             for i in 0..11 {
                 let bpm = pool_manager.clone();
                 write_threads.push(std::thread::spawn(move || {
-                    let page = bpm.fetch_page_writable(i).unwrap();
-                    let mut block_page_writer = WritableHashTableBlockPage::<
-                        tuple_type![u32],
-                        tuple_type![bool, f64],
-                    >::new(page);
-                    block_page_writer
-                        .put_slot(10, tuple![90], tuple![false, 1.23])
-                        .unwrap();
+                    {
+                        let page = bpm.fetch_page_writable(i).unwrap();
+                        let mut block_page_writer = WritableHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
+                        block_page_writer
+                            .put_slot(10, tuple![90], tuple![false, 1.23])
+                            .unwrap();
+                    }
+                    bpm.unpin_page(i, true).unwrap();
                 }));
                 let bpm = pool_manager.clone();
                 write_threads.push(std::thread::spawn(move || {
-                    let page = bpm.fetch_page_writable(i).unwrap();
-                    let mut block_page_writer = WritableHashTableBlockPage::<
-                        tuple_type![u32],
-                        tuple_type![bool, f64],
-                    >::new(page);
-                    block_page_writer
-                        .put_slot(11, tuple![80], tuple![true, 2.34])
-                        .unwrap();
-                    block_page_writer.remove_slot(11).unwrap();
+                    {
+                        let page = bpm.fetch_page_writable(i).unwrap();
+                        let mut block_page_writer = WritableHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
+                        block_page_writer
+                            .put_slot(11, tuple![80], tuple![true, 2.34])
+                            .unwrap();
+                        block_page_writer.remove_slot(11).unwrap();
+                    }
+                    bpm.unpin_page(i, true).unwrap();
                 }));
             }
         }
@@ -655,65 +664,80 @@ mod tests {
             for i in 0..11 {
                 let bpm = pool_manager.clone();
                 read_threads.push(std::thread::spawn(move || {
-                    let page = bpm.fetch_page(i).unwrap();
-                    let block_page_reader = ReadOnlyHashTableBlockPage::<
-                        tuple_type![u32],
-                        tuple_type![bool, f64],
-                    >::new(page);
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let block_page_reader = ReadOnlyHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
 
-                    let slots = block_page_reader.num_slots();
-                    assert_eq!(slots, 309);
+                        let slots = block_page_reader.num_slots();
+                        assert_eq!(slots, 309);
+                    }
+                    bpm.unpin_page(i, false).unwrap();
                 }));
                 let bpm = pool_manager.clone();
                 read_threads.push(std::thread::spawn(move || {
-                    let page = bpm.fetch_page(i).unwrap();
-                    let block_page_reader = ReadOnlyHashTableBlockPage::<
-                        tuple_type![u32],
-                        tuple_type![bool, f64],
-                    >::new(page);
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let block_page_reader = ReadOnlyHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
 
-                    let key_10 = block_page_reader.key_at(10).unwrap();
-                    let value_10 = block_page_reader.value_at(10).unwrap();
-                    let occupied_10 = block_page_reader.slot_occupied(10).unwrap();
-                    let readable_10 = block_page_reader.slot_readable(10).unwrap();
-                    assert_eq!(key_10, tuple![90]);
-                    assert_eq!(value_10, tuple![false, 1.23]);
-                    assert!(occupied_10);
-                    assert!(readable_10);
+                        let key_10 = block_page_reader.key_at(10).unwrap();
+                        let value_10 = block_page_reader.value_at(10).unwrap();
+                        let occupied_10 = block_page_reader.slot_occupied(10).unwrap();
+                        let readable_10 = block_page_reader.slot_readable(10).unwrap();
+                        assert_eq!(key_10, tuple![90]);
+                        assert_eq!(value_10, tuple![false, 1.23]);
+                        assert!(occupied_10);
+                        assert!(readable_10);
+                    }
+
+                    bpm.unpin_page(i, false).unwrap();
                 }));
                 let bpm = pool_manager.clone();
                 read_threads.push(std::thread::spawn(move || {
-                    let page = bpm.fetch_page(i).unwrap();
-                    let block_page_reader = ReadOnlyHashTableBlockPage::<
-                        tuple_type![u32],
-                        tuple_type![bool, f64],
-                    >::new(page);
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let block_page_reader = ReadOnlyHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
 
-                    let key_11_res = block_page_reader.key_at(11);
-                    let value_11_res = block_page_reader.value_at(11);
-                    let occupied_11 = block_page_reader.slot_occupied(11).unwrap();
-                    let readable_11 = block_page_reader.slot_readable(11).unwrap();
-                    assert!(key_11_res.is_err());
-                    assert!(value_11_res.is_err());
-                    assert!(occupied_11);
-                    assert!(!readable_11);
+                        let key_11_res = block_page_reader.key_at(11);
+                        let value_11_res = block_page_reader.value_at(11);
+                        let occupied_11 = block_page_reader.slot_occupied(11).unwrap();
+                        let readable_11 = block_page_reader.slot_readable(11).unwrap();
+                        assert!(key_11_res.is_err());
+                        assert!(value_11_res.is_err());
+                        assert!(occupied_11);
+                        assert!(!readable_11);
+                    }
+
+                    bpm.unpin_page(i, false).unwrap();
                 }));
                 let bpm = pool_manager.clone();
                 read_threads.push(std::thread::spawn(move || {
-                    let page = bpm.fetch_page(i).unwrap();
-                    let block_page_reader = ReadOnlyHashTableBlockPage::<
-                        tuple_type![u32],
-                        tuple_type![bool, f64],
-                    >::new(page);
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let block_page_reader = ReadOnlyHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
 
-                    let key_12_res = block_page_reader.key_at(12);
-                    let value_12_res = block_page_reader.value_at(12);
-                    let occupied_12 = block_page_reader.slot_occupied(12).unwrap();
-                    let readable_12 = block_page_reader.slot_readable(12).unwrap();
-                    assert!(key_12_res.is_err());
-                    assert!(value_12_res.is_err());
-                    assert!(!occupied_12);
-                    assert!(!readable_12);
+                        let key_12_res = block_page_reader.key_at(12);
+                        let value_12_res = block_page_reader.value_at(12);
+                        let occupied_12 = block_page_reader.slot_occupied(12).unwrap();
+                        let readable_12 = block_page_reader.slot_readable(12).unwrap();
+                        assert!(key_12_res.is_err());
+                        assert!(value_12_res.is_err());
+                        assert!(!occupied_12);
+                        assert!(!readable_12);
+                    }
+
+                    bpm.unpin_page(i, false).unwrap();
                 }));
             }
         }

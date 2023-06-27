@@ -6,3 +6,6 @@ edition = "2021"
 
 [dev-dependencies]
 rstest = "0.17.0"
+
+[dependencies]
+xxhash-rust = "0.8.6"
