@@ -525,7 +525,10 @@ mod tests {
                     .set_block_page_id(11, Some(i * 4))
                     .unwrap();
                 tmp_hash_table_header_page
-                    .set_block_page_id(12, Some(i * 5))
+                    .set_block_page_id(12, Some(1))
+                    .unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(12, None)
                     .unwrap();
             }
         }
@@ -552,7 +555,7 @@ mod tests {
                     );
                     assert_eq!(
                         hash_table_header_page_reader.get_block_page_id(12),
-                        Ok(Some(i * 5))
+                        Ok(None)
                     );
                 }));
             }
@@ -564,16 +567,23 @@ mod tests {
     }
 
     #[rstest]
-    fn test_threaded_get_extension_page_id() {
+    #[case(Some(5))]
+    #[case(None)]
+    fn test_threaded_get_extension_page_id(#[case] ext_page_factor: Option<usize>) {
         let pool_manager = create_testing_pool_manager(100);
 
         {
             for i in 0..11 {
+                let ext_page_id = match ext_page_factor {
+                    Some(f) => Some(i * 5),
+                    None => None,
+                };
+
                 let page = pool_manager.new_page().unwrap();
                 let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
                 tmp_hash_table_header_page.initialize().unwrap();
                 tmp_hash_table_header_page
-                    .set_extension_page_id(Some(i * 5))
+                    .set_extension_page_id(ext_page_id)
                     .unwrap();
             }
         }
@@ -585,6 +595,11 @@ mod tests {
         let mut read_threads = Vec::new();
         {
             for i in 0..11 {
+                let ext_page_id = match ext_page_factor {
+                    Some(f) => Some(i * 5),
+                    None => None,
+                };
+
                 let buffer_pool_manager = pool_manager.clone();
                 read_threads.push(std::thread::spawn(move || {
                     let page = buffer_pool_manager.fetch_page(i).unwrap();
@@ -594,7 +609,7 @@ mod tests {
                         .get_extension_page_id()
                         .unwrap();
 
-                    assert_eq!(page_lsn, Some(i * 5));
+                    assert_eq!(page_lsn, ext_page_id);
                 }));
             }
         }

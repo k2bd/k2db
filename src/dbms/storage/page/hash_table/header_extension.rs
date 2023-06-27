@@ -335,7 +335,14 @@ mod tests {
     }
 
     #[rstest]
-    fn test_threaded_extension_page() {
+    #[case(Some(123), Some(456))]
+    #[case(Some(123), None)]
+    #[case(None, Some(456))]
+    #[case(None, None)]
+    fn test_threaded_extension_page(
+        #[case] prev_ext_page_id: Option<PageId>,
+        #[case] next_ext_page_id: Option<PageId>,
+    ) {
         let pool_manager = create_testing_pool_manager(100);
 
         {
@@ -356,8 +363,12 @@ mod tests {
                         let page = bpm.fetch_page_writable(i).unwrap();
                         let mut writer = WritableHashTableHeaderExtensionPage { page };
 
-                        writer.initialize(i, None, Some(i * 2)).unwrap();
+                        writer
+                            .initialize(i, prev_ext_page_id, next_ext_page_id)
+                            .unwrap();
                         writer.set_block_page_id(100, Some(i * 3)).unwrap();
+                        writer.set_block_page_id(101, Some(999)).unwrap();
+                        writer.set_block_page_id(101, None).unwrap();
                     }
                     bpm.unpin_page(i, true).unwrap();
                 }));
@@ -389,7 +400,10 @@ mod tests {
                         let page = bpm.fetch_page(i).unwrap();
                         let reader = ReadOnlyHashTableHeaderExtensionPage { page };
 
-                        assert_eq!(reader.get_previous_extension_page_id().unwrap(), None);
+                        assert_eq!(
+                            reader.get_previous_extension_page_id().unwrap(),
+                            prev_ext_page_id
+                        );
                     }
                     bpm.unpin_page(i, false).unwrap();
                 }));
@@ -399,7 +413,10 @@ mod tests {
                         let page = bpm.fetch_page(i).unwrap();
                         let reader = ReadOnlyHashTableHeaderExtensionPage { page };
 
-                        assert_eq!(reader.get_next_extension_page_id().unwrap(), Some(i * 2));
+                        assert_eq!(
+                            reader.get_next_extension_page_id().unwrap(),
+                            next_ext_page_id
+                        );
                     }
                     bpm.unpin_page(i, false).unwrap();
                 }));
@@ -410,6 +427,16 @@ mod tests {
                         let reader = ReadOnlyHashTableHeaderExtensionPage { page };
 
                         assert_eq!(reader.get_block_page_id(100).unwrap(), Some(i * 3));
+                    }
+                    bpm.unpin_page(i, false).unwrap();
+                }));
+                let bpm = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+
+                        assert_eq!(reader.get_block_page_id(101).unwrap(), None);
                     }
                     bpm.unpin_page(i, false).unwrap();
                 }));
