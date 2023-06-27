@@ -137,8 +137,12 @@ impl<'a> WritableHashTableHeaderPage<'a> {
         Ok(())
     }
 
+    pub fn new(page: WritablePage<'a>) -> Self {
+        Self { page }
+    }
+
     /// Initialize a header page to contain its page ID
-    fn initialize(&mut self) -> Result<(), HashTableHeaderError> {
+    pub fn initialize(&mut self, size: u32) -> Result<(), HashTableHeaderError> {
         let page_id = self.page.get_page_id()?;
         match page_id {
             Some(page_id) => {
@@ -147,6 +151,7 @@ impl<'a> WritableHashTableHeaderPage<'a> {
                 for i in 0..BLOCK_PAGE_IDS_COUNT {
                     self.set_block_page_id(i, None)?;
                 }
+                self.set_size(size);
                 Ok(())
             }
             None => Err(HashTableHeaderError::NoPageId),
@@ -364,7 +369,7 @@ mod tests {
                 write_threads.push(std::thread::spawn(move || {
                     let page = buffer_pool_manager.new_page().unwrap();
                     let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
-                    tmp_hash_table_header_page.initialize().unwrap();
+                    tmp_hash_table_header_page.initialize(10).unwrap();
                 }));
             }
         }
@@ -405,7 +410,7 @@ mod tests {
             for i in 0..11 {
                 let page = pool_manager.new_page().unwrap();
                 let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
-                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page.initialize(10).unwrap();
                 tmp_hash_table_header_page.set_size(i * 5).unwrap();
             }
         }
@@ -442,7 +447,7 @@ mod tests {
             for i in 0..11 {
                 let page = pool_manager.new_page().unwrap();
                 let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
-                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page.initialize(10).unwrap();
                 tmp_hash_table_header_page.set_next_ind(i * 5).unwrap();
             }
         }
@@ -479,7 +484,7 @@ mod tests {
             for i in 0..11 {
                 let page = pool_manager.new_page().unwrap();
                 let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
-                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page.initialize(10).unwrap();
                 tmp_hash_table_header_page.set_lsn(i * 5).unwrap();
             }
         }
@@ -516,7 +521,7 @@ mod tests {
             for i in 0..11 {
                 let page = pool_manager.new_page().unwrap();
                 let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
-                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page.initialize(10).unwrap();
 
                 tmp_hash_table_header_page
                     .set_block_page_id(10, Some(i * 3))
@@ -581,7 +586,7 @@ mod tests {
 
                 let page = pool_manager.new_page().unwrap();
                 let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
-                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page.initialize(10).unwrap();
                 tmp_hash_table_header_page
                     .set_extension_page_id(ext_page_id)
                     .unwrap();
