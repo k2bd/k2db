@@ -1,7 +1,7 @@
 use crate::dbms::{
     buffer::types::{ReadOnlyPage, WritablePage},
     storage::page::PageError,
-    types::PageId,
+    types::{PageId, NULL_PAGE_ID, PAGE_SIZE},
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -22,7 +22,10 @@ const PAGE_ID_OFFSET_BYTES: usize = 0;
 const SIZE_OFFSET_BYTES: usize = PAGE_ENTRY_SIZE_BYTES;
 const NEXT_IND_OFFSET_BYTES: usize = 2 * PAGE_ENTRY_SIZE_BYTES;
 const LSN_OFFSET_BYTES: usize = 3 * PAGE_ENTRY_SIZE_BYTES;
-const BLOCK_PAGE_IDS_START_OFFSET_BYTES: usize = 4 * PAGE_ENTRY_SIZE_BYTES;
+const EXTENSION_PAGE_OFFSET_BYTES: usize = 4 * PAGE_ENTRY_SIZE_BYTES;
+const BLOCK_PAGE_IDS_START_OFFSET_BYTES: usize = 5 * PAGE_ENTRY_SIZE_BYTES;
+const BLOCK_PAGE_IDS_COUNT: usize =
+    (PAGE_SIZE - BLOCK_PAGE_IDS_START_OFFSET_BYTES) / PAGE_ENTRY_SIZE_BYTES;
 
 /// Interact with a page as a hash table header page.
 pub trait IHashTableHeaderPageRead {
@@ -35,7 +38,10 @@ pub trait IHashTableHeaderPageRead {
     /// The log sequence number
     fn get_lsn(&self) -> Result<u32, HashTableHeaderError>;
     /// Get the page ID at the given index
-    fn get_block_page_id(&self, position: usize) -> Result<PageId, HashTableHeaderError>;
+    // TODO: change this to Option<PageId> with null page IDs set by default
+    fn get_block_page_id(&self, position: usize) -> Result<Option<PageId>, HashTableHeaderError>;
+    /// Get the page ID of the first header extension page, if there is one
+    fn get_extension_page_id(&self) -> Result<Option<PageId>, HashTableHeaderError>;
 }
 
 /// Interact with a page as a hash table header page.
@@ -52,7 +58,12 @@ pub trait IHashTableHeaderPageWrite: IHashTableHeaderPageRead {
     fn set_block_page_id(
         &mut self,
         position: usize,
-        page_id: PageId,
+        page_id: Option<PageId>,
+    ) -> Result<(), HashTableHeaderError>;
+    /// Set the ID of the first header extension page, or set it to None
+    fn set_extension_page_id(
+        &mut self,
+        extension_page_id: Option<PageId>,
     ) -> Result<(), HashTableHeaderError>;
 }
 
@@ -85,10 +96,24 @@ impl IHashTableHeaderPageRead for ReadOnlyHashTableHeaderPage<'_> {
         self.read_single_at_offset(LSN_OFFSET_BYTES)
     }
 
-    fn get_block_page_id(&self, position: usize) -> Result<PageId, HashTableHeaderError> {
-        self.read_single_at_offset(
+    fn get_block_page_id(&self, position: usize) -> Result<Option<PageId>, HashTableHeaderError> {
+        let res = self.read_single_at_offset(
             BLOCK_PAGE_IDS_START_OFFSET_BYTES + position * PAGE_ENTRY_SIZE_BYTES,
-        )
+        )?;
+
+        match res {
+            NULL_PAGE_ID => Ok(None),
+            page_id => Ok(Some(page_id)),
+        }
+    }
+
+    fn get_extension_page_id(&self) -> Result<Option<PageId>, HashTableHeaderError> {
+        let res = self.read_single_at_offset(EXTENSION_PAGE_OFFSET_BYTES)?;
+
+        match res {
+            NULL_PAGE_ID => Ok(None),
+            page_id => Ok(Some(page_id)),
+        }
     }
 }
 
@@ -112,13 +137,16 @@ impl<'a> WritableHashTableHeaderPage<'a> {
         Ok(())
     }
 
-    #[allow(dead_code)]
     /// Initialize a header page to contain its page ID
     fn initialize(&mut self) -> Result<(), HashTableHeaderError> {
         let page_id = self.page.get_page_id()?;
         match page_id {
             Some(page_id) => {
                 self.set_page_id(page_id)?;
+                self.set_extension_page_id(None)?;
+                for i in 0..BLOCK_PAGE_IDS_COUNT {
+                    self.set_block_page_id(i, None)?;
+                }
                 Ok(())
             }
             None => Err(HashTableHeaderError::NoPageId),
@@ -143,10 +171,24 @@ impl IHashTableHeaderPageRead for WritableHashTableHeaderPage<'_> {
         self.read_single_at_offset(LSN_OFFSET_BYTES)
     }
 
-    fn get_block_page_id(&self, position: usize) -> Result<PageId, HashTableHeaderError> {
-        self.read_single_at_offset(
+    fn get_block_page_id(&self, position: usize) -> Result<Option<PageId>, HashTableHeaderError> {
+        let res = self.read_single_at_offset(
             BLOCK_PAGE_IDS_START_OFFSET_BYTES + position * PAGE_ENTRY_SIZE_BYTES,
-        )
+        )?;
+
+        match res {
+            NULL_PAGE_ID => Ok(None),
+            page_id => Ok(Some(page_id)),
+        }
+    }
+
+    fn get_extension_page_id(&self) -> Result<Option<PageId>, HashTableHeaderError> {
+        let res = self.read_single_at_offset(EXTENSION_PAGE_OFFSET_BYTES)?;
+
+        match res {
+            NULL_PAGE_ID => Ok(None),
+            page_id => Ok(Some(page_id)),
+        }
     }
 }
 
@@ -170,12 +212,23 @@ impl IHashTableHeaderPageWrite for WritableHashTableHeaderPage<'_> {
     fn set_block_page_id(
         &mut self,
         position: usize,
-        page_id: PageId,
+        page_id: Option<PageId>,
     ) -> Result<(), HashTableHeaderError> {
-        self.write_single_at_offset(
-            BLOCK_PAGE_IDS_START_OFFSET_BYTES + position * PAGE_ENTRY_SIZE_BYTES,
-            page_id,
-        )
+        let pos = BLOCK_PAGE_IDS_START_OFFSET_BYTES + position * PAGE_ENTRY_SIZE_BYTES;
+        match page_id {
+            Some(p) => self.write_single_at_offset(pos, p),
+            None => self.write_single_at_offset(pos, NULL_PAGE_ID),
+        }
+    }
+
+    fn set_extension_page_id(
+        &mut self,
+        extension_page_id: Option<PageId>,
+    ) -> Result<(), HashTableHeaderError> {
+        match extension_page_id {
+            Some(page_id) => self.write_single_at_offset(EXTENSION_PAGE_OFFSET_BYTES, page_id),
+            None => self.write_single_at_offset(EXTENSION_PAGE_OFFSET_BYTES, NULL_PAGE_ID),
+        }
     }
 }
 
@@ -251,11 +304,52 @@ mod tests {
 
         let mut hash_table_header_page = WritableHashTableHeaderPage { page };
 
-        hash_table_header_page.set_block_page_id(10, 123).unwrap();
+        hash_table_header_page
+            .set_block_page_id(10, Some(123))
+            .unwrap();
 
         let page_block_page_id = hash_table_header_page.get_block_page_id(10).unwrap();
 
-        assert_eq!(page_block_page_id, 123);
+        assert_eq!(page_block_page_id, Some(123));
+    }
+
+    #[rstest]
+    fn test_writable_page_set_block_page_id_to_none() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+
+        hash_table_header_page
+            .set_block_page_id(10, Some(123))
+            .unwrap();
+        let page_block_page_id = hash_table_header_page.get_block_page_id(10).unwrap();
+        assert_eq!(page_block_page_id, Some(123));
+
+        hash_table_header_page.set_block_page_id(10, None).unwrap();
+        let page_block_page_id = hash_table_header_page.get_block_page_id(10).unwrap();
+        assert_eq!(page_block_page_id, None);
+    }
+
+    #[rstest]
+    fn test_writable_page_read_header_extension_page_id() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+
+        hash_table_header_page
+            .set_extension_page_id(Some(123))
+            .unwrap();
+        let page_header_extension_page_id = hash_table_header_page.get_extension_page_id().unwrap();
+
+        assert_eq!(page_header_extension_page_id, Some(123));
+
+        hash_table_header_page.set_extension_page_id(None).unwrap();
+        let page_header_extension_page_id_2 =
+            hash_table_header_page.get_extension_page_id().unwrap();
+
+        assert_eq!(page_header_extension_page_id_2, None);
     }
 
     #[rstest]
@@ -425,13 +519,13 @@ mod tests {
                 tmp_hash_table_header_page.initialize().unwrap();
 
                 tmp_hash_table_header_page
-                    .set_block_page_id(10, i * 3)
+                    .set_block_page_id(10, Some(i * 3))
                     .unwrap();
                 tmp_hash_table_header_page
-                    .set_block_page_id(11, i * 4)
+                    .set_block_page_id(11, Some(i * 4))
                     .unwrap();
                 tmp_hash_table_header_page
-                    .set_block_page_id(12, i * 5)
+                    .set_block_page_id(12, Some(i * 5))
                     .unwrap();
             }
         }
@@ -450,16 +544,57 @@ mod tests {
 
                     assert_eq!(
                         hash_table_header_page_reader.get_block_page_id(10),
-                        Ok(i * 3)
+                        Ok(Some(i * 3))
                     );
                     assert_eq!(
                         hash_table_header_page_reader.get_block_page_id(11),
-                        Ok(i * 4)
+                        Ok(Some(i * 4))
                     );
                     assert_eq!(
                         hash_table_header_page_reader.get_block_page_id(12),
-                        Ok(i * 5)
+                        Ok(Some(i * 5))
                     );
+                }));
+            }
+        }
+
+        for thread in read_threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[rstest]
+    fn test_threaded_get_extension_page_id() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        {
+            for i in 0..11 {
+                let page = pool_manager.new_page().unwrap();
+                let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
+                tmp_hash_table_header_page.initialize().unwrap();
+                tmp_hash_table_header_page
+                    .set_extension_page_id(Some(i * 5))
+                    .unwrap();
+            }
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        // Show that we can read back the page ID from a page
+        // (relying on the test logic that page IDs in the test pool manager count up from 0)
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let buffer_pool_manager = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    let page = buffer_pool_manager.fetch_page(i).unwrap();
+                    let hash_table_header_page_reader = ReadOnlyHashTableHeaderPage { page };
+
+                    let page_lsn = hash_table_header_page_reader
+                        .get_extension_page_id()
+                        .unwrap();
+
+                    assert_eq!(page_lsn, Some(i * 5));
                 }));
             }
         }
