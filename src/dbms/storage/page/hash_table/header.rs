@@ -1,3 +1,5 @@
+use std::slice::Iter;
+
 use crate::dbms::{
     buffer::types::{ReadOnlyPage, WritablePage},
     storage::page::PageError,
@@ -28,7 +30,7 @@ const BLOCK_PAGE_IDS_COUNT: usize =
     (PAGE_SIZE - BLOCK_PAGE_IDS_START_OFFSET_BYTES) / PAGE_ENTRY_SIZE_BYTES;
 
 /// Interact with a page as a hash table header page.
-pub trait IHashTableHeaderPageRead {
+pub trait IHashTableHeaderPageRead<'a> {
     /// Get the page ID
     fn get_page_id(&self) -> Result<PageId, HashTableHeaderError>;
     /// Number of Key & Value pairs the hash table can hold
@@ -38,14 +40,15 @@ pub trait IHashTableHeaderPageRead {
     /// The log sequence number
     fn get_lsn(&self) -> Result<u32, HashTableHeaderError>;
     /// Get the page ID at the given index
-    // TODO: change this to Option<PageId> with null page IDs set by default
     fn get_block_page_id(&self, position: usize) -> Result<Option<PageId>, HashTableHeaderError>;
     /// Get the page ID of the first header extension page, if there is one
     fn get_extension_page_id(&self) -> Result<Option<PageId>, HashTableHeaderError>;
+    /// Iterate over block page IDs within the header page (excluding extensions)
+    fn iter_block_page_ids<'b>(&'b self) -> BlockPageIdIterator<'b, 'a>;
 }
 
 /// Interact with a page as a hash table header page.
-pub trait IHashTableHeaderPageWrite: IHashTableHeaderPageRead {
+pub trait IHashTableHeaderPageWrite<'a>: IHashTableHeaderPageRead<'a> {
     /// Set the page ID
     fn set_page_id(&mut self, page_id: PageId) -> Result<(), HashTableHeaderError>;
     /// Set the number of Key & Value pairs the hash table can hold
@@ -79,7 +82,7 @@ impl<'a> ReadOnlyHashTableHeaderPage<'a> {
     }
 }
 
-impl IHashTableHeaderPageRead for ReadOnlyHashTableHeaderPage<'_> {
+impl<'a> IHashTableHeaderPageRead<'a> for ReadOnlyHashTableHeaderPage<'a> {
     fn get_page_id(&self) -> Result<PageId, HashTableHeaderError> {
         self.read_single_at_offset(PAGE_ID_OFFSET_BYTES)
     }
@@ -114,6 +117,40 @@ impl IHashTableHeaderPageRead for ReadOnlyHashTableHeaderPage<'_> {
             NULL_PAGE_ID => Ok(None),
             page_id => Ok(Some(page_id)),
         }
+    }
+
+    fn iter_block_page_ids<'b>(&'b self) -> BlockPageIdIterator<'b, 'a> {
+        BlockPageIdIterator {
+            header_page: self,
+            current_position: 0,
+            max_position: BLOCK_PAGE_IDS_COUNT,
+            _lifetime: std::marker::PhantomData,
+        }
+    }
+}
+
+pub struct BlockPageIdIterator<'a, 'b> {
+    header_page: &'a dyn IHashTableHeaderPageRead<'a>,
+    current_position: usize,
+    max_position: usize,
+    _lifetime: std::marker::PhantomData<&'b ()>,
+}
+
+impl<'a, 'b> Iterator for BlockPageIdIterator<'a, 'b> {
+    type Item = PageId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current_position < self.max_position {
+            let page_id = self
+                .header_page
+                .get_block_page_id(self.current_position)
+                .unwrap();
+            self.current_position += 1;
+            if let Some(page_id) = page_id {
+                return Some(page_id);
+            }
+        }
+        None
     }
 }
 
@@ -159,7 +196,7 @@ impl<'a> WritableHashTableHeaderPage<'a> {
     }
 }
 
-impl IHashTableHeaderPageRead for WritableHashTableHeaderPage<'_> {
+impl<'a> IHashTableHeaderPageRead<'a> for WritableHashTableHeaderPage<'a> {
     fn get_page_id(&self) -> Result<PageId, HashTableHeaderError> {
         self.read_single_at_offset(PAGE_ID_OFFSET_BYTES)
     }
@@ -195,9 +232,18 @@ impl IHashTableHeaderPageRead for WritableHashTableHeaderPage<'_> {
             page_id => Ok(Some(page_id)),
         }
     }
+
+    fn iter_block_page_ids<'b>(&'b self) -> BlockPageIdIterator<'b, 'a> {
+        BlockPageIdIterator {
+            header_page: self,
+            current_position: 0,
+            max_position: BLOCK_PAGE_IDS_COUNT,
+            _lifetime: std::marker::PhantomData,
+        }
+    }
 }
 
-impl IHashTableHeaderPageWrite for WritableHashTableHeaderPage<'_> {
+impl<'a> IHashTableHeaderPageWrite<'a> for WritableHashTableHeaderPage<'a> {
     fn set_page_id(&mut self, page_id: PageId) -> Result<(), HashTableHeaderError> {
         self.write_single_at_offset(PAGE_ID_OFFSET_BYTES, page_id)
     }
@@ -355,6 +401,33 @@ mod tests {
             hash_table_header_page.get_extension_page_id().unwrap();
 
         assert_eq!(page_header_extension_page_id_2, None);
+    }
+
+    #[rstest]
+    fn test_writable_page_iter_block_page_ids() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+        let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+
+        hash_table_header_page.initialize(10).unwrap();
+
+        hash_table_header_page
+            .set_block_page_id(100, Some(123))
+            .unwrap();
+        hash_table_header_page
+            .set_block_page_id(101, Some(234))
+            .unwrap();
+        hash_table_header_page
+            .set_block_page_id(150, Some(345))
+            .unwrap();
+
+        let mut iter = hash_table_header_page.iter_block_page_ids();
+        let mut block_page_ids = Vec::new();
+        while let Some(block_page_id) = iter.next() {
+            block_page_ids.push(block_page_id);
+        }
+
+        assert_eq!(block_page_ids, vec![123, 234, 345]);
     }
 
     #[rstest]
@@ -616,6 +689,61 @@ mod tests {
 
                     assert_eq!(page_lsn, ext_page_id);
                 }));
+            }
+        }
+
+        for thread in read_threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[rstest]
+    fn test_threaded_iter_block_page_ids() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        {
+            for i in 0..11 {
+                let page = pool_manager.new_page().unwrap();
+                let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
+                tmp_hash_table_header_page.initialize(10).unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(10, Some(i * 3))
+                    .unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(11, Some(i * 4))
+                    .unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(12, Some(1))
+                    .unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(12, None)
+                    .unwrap();
+                tmp_hash_table_header_page
+                    .set_block_page_id(100, Some(123))
+                    .unwrap();
+            }
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                for _ in 0..5 {
+                    let buffer_pool_manager = pool_manager.clone();
+                    read_threads.push(std::thread::spawn(move || {
+                        let page = buffer_pool_manager.fetch_page(i).unwrap();
+                        let hash_table_header_page_reader = ReadOnlyHashTableHeaderPage { page };
+
+                        let mut iter = hash_table_header_page_reader.iter_block_page_ids();
+                        let mut block_page_ids = Vec::new();
+                        while let Some(block_page_id) = iter.next() {
+                            block_page_ids.push(block_page_id);
+                        }
+
+                        assert_eq!(block_page_ids, vec![i * 3, i * 4, 123]);
+                    }));
+                }
             }
         }
 

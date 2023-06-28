@@ -93,7 +93,8 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize> IHashTable<KeyType, Val
     ) -> Result<Self, HashTableError> {
         let header_page_id: u32;
 
-        { // Init header page
+        {
+            // Init header page
             let page = pool.new_page()?;
             let mut header_page = WritableHashTableHeaderPage::new(page);
             header_page.initialize(initial_table_size)?;
