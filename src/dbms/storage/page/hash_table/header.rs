@@ -45,6 +45,13 @@ pub trait IHashTableHeaderPageRead<'a> {
     fn get_extension_page_id(&self) -> Result<Option<PageId>, HashTableHeaderError>;
     /// Iterate over block page IDs within the header page (excluding extensions)
     fn iter_block_page_ids<'b>(&'b self) -> BlockPageIdIterator<'b, 'a>;
+    /// Block page ID capacity slots
+    fn capacity_slots() -> usize
+    where
+        Self: Sized,
+    {
+        BLOCK_PAGE_IDS_COUNT
+    }
 }
 
 /// Interact with a page as a hash table header page.
@@ -68,6 +75,31 @@ pub trait IHashTableHeaderPageWrite<'a>: IHashTableHeaderPageRead<'a> {
         &mut self,
         extension_page_id: Option<PageId>,
     ) -> Result<(), HashTableHeaderError>;
+}
+
+pub struct BlockPageIdIterator<'a, 'b> {
+    header_page: &'a dyn IHashTableHeaderPageRead<'a>,
+    current_position: usize,
+    max_position: usize,
+    _lifetime: std::marker::PhantomData<&'b ()>,
+}
+
+impl<'a, 'b> Iterator for BlockPageIdIterator<'a, 'b> {
+    type Item = PageId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current_position < self.max_position {
+            let page_id = self
+                .header_page
+                .get_block_page_id(self.current_position)
+                .unwrap();
+            self.current_position += 1;
+            if let Some(page_id) = page_id {
+                return Some(page_id);
+            }
+        }
+        None
+    }
 }
 
 pub struct ReadOnlyHashTableHeaderPage<'a> {
@@ -126,31 +158,6 @@ impl<'a> IHashTableHeaderPageRead<'a> for ReadOnlyHashTableHeaderPage<'a> {
             max_position: BLOCK_PAGE_IDS_COUNT,
             _lifetime: std::marker::PhantomData,
         }
-    }
-}
-
-pub struct BlockPageIdIterator<'a, 'b> {
-    header_page: &'a dyn IHashTableHeaderPageRead<'a>,
-    current_position: usize,
-    max_position: usize,
-    _lifetime: std::marker::PhantomData<&'b ()>,
-}
-
-impl<'a, 'b> Iterator for BlockPageIdIterator<'a, 'b> {
-    type Item = PageId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.current_position < self.max_position {
-            let page_id = self
-                .header_page
-                .get_block_page_id(self.current_position)
-                .unwrap();
-            self.current_position += 1;
-            if let Some(page_id) = page_id {
-                return Some(page_id);
-            }
-        }
-        None
     }
 }
 
