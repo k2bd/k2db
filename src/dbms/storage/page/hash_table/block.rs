@@ -10,19 +10,31 @@ use crate::dbms::{
 
 use super::util::{calculate_block_page_layout, PageLayout};
 
-pub trait IHashTableBlockPageRead<KeyType: BytesSerialize, ValueType: BytesSerialize> {
-    type KeyType;
-    type ValueType;
-
+pub trait IHashTableBlockPageRead<'a, KeyType: BytesSerialize, ValueType: BytesSerialize> {
     fn key_at(&self, slot: usize) -> Result<KeyType, HashTableBlockError>;
     fn value_at(&self, slot: usize) -> Result<ValueType, HashTableBlockError>;
     fn slot_occupied(&self, slot: usize) -> Result<bool, HashTableBlockError>;
     fn slot_readable(&self, slot: usize) -> Result<bool, HashTableBlockError>;
     fn num_slots(&self) -> usize;
+    /// Iterate over all non-null entries in the page
+    fn iter_entries<'b>(&'b self) -> EntryIterator<'b, 'a, KeyType, ValueType>;
+    /// Iterate over a block of entries from a given offset to the first null
+    fn iter_block<'b>(&'b self, from_slot: usize) -> EntryIterator<'b, 'a, KeyType, ValueType>;
+    /// Fraction of entries that are filled
+    fn fraction_slots_filled(&self) -> Result<f32, HashTableBlockError> {
+        let mut total = 0;
+        let num_slots = self.num_slots();
+        for i in 0..num_slots {
+            if self.slot_occupied(i)? {
+                total += 1;
+            }
+        }
+        Ok(total as f32 / num_slots as f32)
+    }
 }
 
-pub trait IHashTableBlockPageWrite<KeyType: BytesSerialize, ValueType: BytesSerialize>:
-    IHashTableBlockPageRead<KeyType, ValueType>
+pub trait IHashTableBlockPageWrite<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>:
+    IHashTableBlockPageRead<'a, KeyType, ValueType>
 {
     fn put_slot(
         &mut self,
@@ -51,6 +63,13 @@ impl From<SerializeError> for HashTableBlockError {
     fn from(e: SerializeError) -> Self {
         HashTableBlockError::SerializeError(e)
     }
+}
+
+struct EntryIterator<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize> {
+    block_page: &'a dyn IHashTableBlockPageRead<'a, KeyType, ValueType>,
+    current_position: usize,
+    max_position: usize,
+    _lifetime: std::marker::PhantomData<&'b ()>,
 }
 
 pub struct ReadOnlyHashTableBlockPage<'a, KeyType: BytesSerialize, ValueType: BytesSerialize> {
@@ -137,12 +156,9 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
 }
 
 impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
-    IHashTableBlockPageRead<KeyType, ValueType>
+    IHashTableBlockPageRead<'a, KeyType, ValueType>
     for ReadOnlyHashTableBlockPage<'a, KeyType, ValueType>
 {
-    type KeyType = KeyType;
-    type ValueType = ValueType;
-
     fn key_at(&self, slot: usize) -> Result<KeyType, HashTableBlockError> {
         self.read_key(slot)
     }
@@ -161,6 +177,14 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
 
     fn num_slots(&self) -> usize {
         self.layout.max_values
+    }
+
+    fn iter_entries<'b>(&'b self) -> EntryIterator<'b, 'a, KeyType, ValueType> {
+        todo!()
+    }
+
+    fn iter_block<'b>(&'b self, from_slot: usize) -> EntryIterator<'b, 'a, KeyType, ValueType> {
+        todo!()
     }
 }
 
@@ -284,12 +308,9 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
 }
 
 impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
-    IHashTableBlockPageRead<KeyType, ValueType>
+    IHashTableBlockPageRead<'a, KeyType, ValueType>
     for WritableHashTableBlockPage<'a, KeyType, ValueType>
 {
-    type KeyType = KeyType;
-    type ValueType = ValueType;
-
     fn key_at(&self, slot: usize) -> Result<KeyType, HashTableBlockError> {
         self.read_key(slot)
     }
@@ -309,10 +330,18 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
     fn num_slots(&self) -> usize {
         self.layout.max_values
     }
+
+    fn iter_entries<'b>(&'b self) -> EntryIterator<'b, 'a, KeyType, ValueType> {
+        todo!()
+    }
+
+    fn iter_block<'b>(&'b self, from_slot: usize) -> EntryIterator<'b, 'a, KeyType, ValueType> {
+        todo!()
+    }
 }
 
 impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
-    IHashTableBlockPageWrite<KeyType, ValueType>
+    IHashTableBlockPageWrite<'a, KeyType, ValueType>
     for WritableHashTableBlockPage<'a, KeyType, ValueType>
 {
     fn put_slot(
