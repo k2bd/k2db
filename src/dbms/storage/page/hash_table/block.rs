@@ -23,7 +23,7 @@ pub trait IHashTableBlockPageRead<'a, KeyType: BytesSerialize, ValueType: BytesS
         to_slot: Option<usize>,
     ) -> EntryIterator<'b, 'a, KeyType, ValueType>;
     /// Fraction of entries that are filled
-    fn fraction_slots_filled(&self) -> Result<f32, HashTableBlockError> {
+    fn fraction_slots_occupied(&self) -> Result<f32, HashTableBlockError> {
         let mut total = 0;
         let num_slots = self.num_slots();
         for i in 0..num_slots {
@@ -684,6 +684,32 @@ mod tests {
     }
 
     #[rstest]
+    fn test_writable_block_fraction_slots_occupied() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        // Create a block page with u32 keys and (bool, f64) values
+        let mut block_page =
+            WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
+
+        // Put a key-value pair in the first slot
+        let key1 = tuple![1];
+        let value1 = tuple![true, 1.0];
+        block_page.put_slot(0, key1, value1).unwrap();
+
+        // Put a key-value pair in the second slot, then delete it
+        let key2 = tuple![2];
+        let value2 = tuple![false, 2.0];
+        block_page.put_slot(1, key2, value2).unwrap();
+        block_page.remove_slot(1).unwrap();
+
+        assert_eq!(
+            block_page.fraction_slots_occupied().unwrap(),
+            2f32 / block_page.num_slots() as f32
+        );
+    }
+
+    #[rstest]
     fn test_iter_entries() {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
@@ -864,6 +890,23 @@ mod tests {
                         assert!(value_12_res.is_err());
                         assert!(!occupied_12);
                         assert!(!readable_12);
+                    }
+
+                    bpm.unpin_page(i, false).unwrap();
+                }));
+                let bpm = pool_manager.clone();
+                read_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page(i).unwrap();
+                        let block_page_reader = ReadOnlyHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
+
+                        assert_eq!(
+                            block_page_reader.fraction_slots_occupied().unwrap(),
+                            2f32 / 309f32
+                        );
                     }
 
                     bpm.unpin_page(i, false).unwrap();
