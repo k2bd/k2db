@@ -684,7 +684,58 @@ mod tests {
     }
 
     #[rstest]
-    fn test_threaded_put_and_read_slot() {
+    fn test_iter_entries() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        // Create a block page with u32 keys and (bool, f64) values
+        let mut block_page =
+            WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
+
+        // Fill the page with key-value pairs
+        for i in 0..block_page.num_slots() {
+            if i % 2 == 0 {
+                continue;
+            }
+
+            let key = tuple![i as u32];
+            let value = tuple![true, i as f64 / 3f64];
+            block_page.put_slot(i, key, value).unwrap();
+        }
+
+        // Iterate over the entries
+        let mut iter = block_page.iter_entries(0, None);
+        for i in 0..block_page.num_slots() {
+            let key = tuple![i as u32];
+            let value = tuple![true, i as f64 / 3f64];
+            let iter_val = iter.next().unwrap();
+
+            if i % 2 == 0 {
+                assert!(iter_val.is_none());
+            } else {
+                let (read_key, read_value) = iter_val.unwrap();
+                assert_eq!(read_key, key);
+                assert_eq!(read_value, value);
+            }
+        }
+
+        // Iterate over just a few entries
+        let iter = block_page.iter_entries(10, Some(14));
+        let entries = iter.collect::<Vec<_>>();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(
+            entries,
+            vec![
+                None,
+                Some((tuple![11u32], tuple![true, 11f64 / 3f64])),
+                None,
+                Some((tuple![13u32], tuple![true, 13f64 / 3f64])),
+            ]
+        );
+    }
+
+    #[rstest]
+    fn test_threaded_block_page() {
         let pool_manager = create_testing_pool_manager(100);
 
         {
@@ -817,6 +868,110 @@ mod tests {
 
                     bpm.unpin_page(i, false).unwrap();
                 }));
+            }
+        }
+
+        for thread in read_threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[rstest]
+    fn test_threaded_iter_entries() {
+        let pool_manager = create_testing_pool_manager(100);
+
+        {
+            for i in 0..11 {
+                {
+                    let _p = pool_manager.new_page().unwrap();
+                }
+                pool_manager.unpin_page(i, false).unwrap();
+            }
+        }
+
+        let mut write_threads = Vec::new();
+        {
+            for i in 0..11 {
+                let bpm = pool_manager.clone();
+                write_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page_writable(i).unwrap();
+                        let mut block_page_writer = WritableHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
+                        block_page_writer
+                            .put_slot(10, tuple![90], tuple![false, 1.23])
+                            .unwrap();
+                    }
+                    bpm.unpin_page(i, true).unwrap();
+                }));
+                let bpm = pool_manager.clone();
+                write_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page_writable(i).unwrap();
+                        let mut block_page_writer = WritableHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
+                        block_page_writer
+                            .put_slot(11, tuple![80], tuple![true, 2.34])
+                            .unwrap();
+                        block_page_writer.remove_slot(11).unwrap();
+                    }
+                    bpm.unpin_page(i, true).unwrap();
+                }));
+                let bpm = pool_manager.clone();
+                write_threads.push(std::thread::spawn(move || {
+                    {
+                        let page = bpm.fetch_page_writable(i).unwrap();
+                        let mut block_page_writer = WritableHashTableBlockPage::<
+                            tuple_type![u32],
+                            tuple_type![bool, f64],
+                        >::new(page);
+                        block_page_writer
+                            .put_slot(12, tuple![70], tuple![true, 3.45])
+                            .unwrap();
+                    }
+                    bpm.unpin_page(i, true).unwrap();
+                }));
+            }
+        }
+
+        for thread in write_threads {
+            thread.join().unwrap();
+        }
+
+        pool_manager.flush_all_pages().unwrap();
+
+        let mut read_threads = Vec::new();
+        {
+            for i in 0..11 {
+                for _ in 0..3 {
+                    // Read the same page multiple times in different threads
+                    let bpm = pool_manager.clone();
+                    read_threads.push(std::thread::spawn(move || {
+                        {
+                            let page = bpm.fetch_page(i).unwrap();
+                            let block_page_reader = ReadOnlyHashTableBlockPage::<
+                                tuple_type![u32],
+                                tuple_type![bool, f64],
+                            >::new(page);
+
+                            let iter = block_page_reader.iter_entries(10, Some(13));
+                            let values = iter.collect::<Vec<_>>();
+                            assert_eq!(
+                                values,
+                                vec![
+                                    Some((tuple![90], tuple![false, 1.23])),
+                                    None,
+                                    Some((tuple![70], tuple![true, 3.45])),
+                                ]
+                            );
+                        }
+                        bpm.unpin_page(i, false).unwrap();
+                    }));
+                }
             }
         }
 
