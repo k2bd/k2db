@@ -16,10 +16,12 @@ pub trait IHashTableBlockPageRead<'a, KeyType: BytesSerialize, ValueType: BytesS
     fn slot_occupied(&self, slot: usize) -> Result<bool, HashTableBlockError>;
     fn slot_readable(&self, slot: usize) -> Result<bool, HashTableBlockError>;
     fn num_slots(&self) -> usize;
-    /// Iterate over all non-null entries in the page
-    fn iter_entries<'b>(&'b self) -> EntryIterator<'b, 'a, KeyType, ValueType>;
-    /// Iterate over a block of entries from a given offset to the first null
-    fn iter_block<'b>(&'b self, from_slot: usize) -> EntryIterator<'b, 'a, KeyType, ValueType>;
+    /// Iterate over entries in the page
+    fn iter_entries<'b>(
+        &'b self,
+        from_slot: usize,
+        to_slot: Option<usize>,
+    ) -> EntryIterator<'b, 'a, KeyType, ValueType>;
     /// Fraction of entries that are filled
     fn fraction_slots_filled(&self) -> Result<f32, HashTableBlockError> {
         let mut total = 0;
@@ -65,11 +67,58 @@ impl From<SerializeError> for HashTableBlockError {
     }
 }
 
-struct EntryIterator<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize> {
+pub struct EntryIterator<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize> {
     block_page: &'a dyn IHashTableBlockPageRead<'a, KeyType, ValueType>,
     current_position: usize,
     max_position: usize,
     _lifetime: std::marker::PhantomData<&'b ()>,
+}
+
+impl<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize>
+    EntryIterator<'a, 'b, KeyType, ValueType>
+{
+    fn new(
+        block_page: &'a dyn IHashTableBlockPageRead<'a, KeyType, ValueType>,
+        from_slot: usize,
+        to_slot: Option<usize>,
+    ) -> Self {
+        let max_position = match to_slot {
+            Some(to_slot) => to_slot,
+            None => block_page.num_slots(),
+        };
+        Self {
+            block_page,
+            current_position: from_slot,
+            max_position,
+            _lifetime: PhantomData,
+        }
+    }
+}
+
+impl<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize> Iterator
+    for EntryIterator<'a, 'b, KeyType, ValueType>
+{
+    type Item = Option<(KeyType, ValueType)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_position >= self.max_position {
+            // Stop iteration
+            return None;
+        }
+        let readable = self
+            .block_page
+            .slot_readable(self.current_position)
+            .unwrap();
+        if !readable {
+            self.current_position += 1;
+            // Empty slot
+            return Some(None);
+        }
+        let key = self.block_page.key_at(self.current_position).unwrap();
+        let value = self.block_page.value_at(self.current_position).unwrap();
+        self.current_position += 1;
+        Some(Some((key, value)))
+    }
 }
 
 pub struct ReadOnlyHashTableBlockPage<'a, KeyType: BytesSerialize, ValueType: BytesSerialize> {
@@ -179,12 +228,12 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         self.layout.max_values
     }
 
-    fn iter_entries<'b>(&'b self) -> EntryIterator<'b, 'a, KeyType, ValueType> {
-        todo!()
-    }
-
-    fn iter_block<'b>(&'b self, from_slot: usize) -> EntryIterator<'b, 'a, KeyType, ValueType> {
-        todo!()
+    fn iter_entries<'b>(
+        &'b self,
+        from_slot: usize,
+        to_slot: Option<usize>,
+    ) -> EntryIterator<'b, 'a, KeyType, ValueType> {
+        EntryIterator::new(self, from_slot, to_slot)
     }
 }
 
@@ -331,12 +380,12 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         self.layout.max_values
     }
 
-    fn iter_entries<'b>(&'b self) -> EntryIterator<'b, 'a, KeyType, ValueType> {
-        todo!()
-    }
-
-    fn iter_block<'b>(&'b self, from_slot: usize) -> EntryIterator<'b, 'a, KeyType, ValueType> {
-        todo!()
+    fn iter_entries<'b>(
+        &'b self,
+        from_slot: usize,
+        to_slot: Option<usize>,
+    ) -> EntryIterator<'b, 'a, KeyType, ValueType> {
+        EntryIterator::new(self, from_slot, to_slot)
     }
 }
 
