@@ -248,7 +248,6 @@ pub struct WritableHashTableBlockPage<'a, KeyType: BytesSerialize, ValueType: By
 impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
     WritableHashTableBlockPage<'a, KeyType, ValueType>
 {
-    #[allow(dead_code)]
     pub fn new(page: WritablePage<'a>) -> Self {
         let layout =
             calculate_block_page_layout(KeyType::serialized_size() + ValueType::serialized_size())

@@ -6,6 +6,8 @@ use crate::dbms::{
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HashTableHeaderExtensionError {
+    /// No more space for block page IDs
+    NoMoreCapacity,
     PageError(PageError),
 }
 
@@ -27,6 +29,20 @@ const BLOCK_PAGE_IDS_COUNT: usize =
 pub trait IHashTableHeaderExtensionPageRead<'a> {
     /// Get the page ID of the root header page
     fn get_header_page_id(&self) -> Result<PageId, HashTableHeaderExtensionError>;
+    /// The next index to add a new entry
+    fn get_next_ind(&self) -> Result<usize, HashTableHeaderExtensionError>
+    where
+        Self: Sized,
+    {
+        let mut next_ind = 0;
+        while let Some(_) = self.get_block_page_id(next_ind)? {
+            next_ind += 1;
+            if next_ind >= Self::capacity_slots() {
+                return Err(HashTableHeaderExtensionError::NoMoreCapacity);
+            }
+        }
+        Ok(next_ind)
+    }
     /// Get the page ID of the previous extension page, if there is one
     fn get_previous_extension_page_id(
         &self,
@@ -69,6 +85,14 @@ pub trait IHashTableHeaderExtensionPageWrite<'a>: IHashTableHeaderExtensionPageR
         position: usize,
         page_id: Option<PageId>,
     ) -> Result<(), HashTableHeaderExtensionError>;
+    /// Higher-level function to add a block page ID to the header page in the next slot
+    fn add_block_page_id(&mut self, page_id: PageId) -> Result<(), HashTableHeaderExtensionError>
+    where
+        Self: Sized,
+    {
+        self.set_block_page_id(self.get_next_ind()?, Some(page_id))?;
+        Ok(())
+    }
 }
 
 pub struct BlockPageIdIterator<'a, 'b> {
@@ -159,6 +183,10 @@ pub struct WritableHashTableHeaderExtensionPage<'a> {
 }
 
 impl<'a> WritableHashTableHeaderExtensionPage<'a> {
+    pub fn new(page: WritablePage<'a>) -> Self {
+        Self { page }
+    }
+
     fn read_single_at_offset(
         &self,
         offset_bytes: usize,
@@ -178,7 +206,7 @@ impl<'a> WritableHashTableHeaderExtensionPage<'a> {
     }
 
     /// Initialize a new header extension page
-    fn initialize(
+    pub fn initialize(
         &mut self,
         header_page_id: PageId,
         previous_extension_page_id: Option<PageId>,

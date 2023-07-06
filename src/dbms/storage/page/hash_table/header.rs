@@ -10,6 +10,8 @@ use crate::dbms::{
 pub enum HashTableHeaderError {
     /// Provided page ID is not set
     NoPageId,
+    /// No more space for block page IDs
+    NoMoreCapacity,
     PageError(PageError),
 }
 
@@ -22,10 +24,9 @@ impl From<PageError> for HashTableHeaderError {
 const PAGE_ENTRY_SIZE_BYTES: usize = (PageId::BITS / 8) as usize;
 const PAGE_ID_OFFSET_BYTES: usize = 0;
 const SIZE_OFFSET_BYTES: usize = PAGE_ENTRY_SIZE_BYTES;
-const NEXT_IND_OFFSET_BYTES: usize = 2 * PAGE_ENTRY_SIZE_BYTES;
-const LSN_OFFSET_BYTES: usize = 3 * PAGE_ENTRY_SIZE_BYTES;
-const EXTENSION_PAGE_OFFSET_BYTES: usize = 4 * PAGE_ENTRY_SIZE_BYTES;
-const BLOCK_PAGE_IDS_START_OFFSET_BYTES: usize = 5 * PAGE_ENTRY_SIZE_BYTES;
+const LSN_OFFSET_BYTES: usize = 2 * PAGE_ENTRY_SIZE_BYTES;
+const EXTENSION_PAGE_OFFSET_BYTES: usize = 3 * PAGE_ENTRY_SIZE_BYTES;
+const BLOCK_PAGE_IDS_START_OFFSET_BYTES: usize = 4 * PAGE_ENTRY_SIZE_BYTES;
 const BLOCK_PAGE_IDS_COUNT: usize =
     (PAGE_SIZE - BLOCK_PAGE_IDS_START_OFFSET_BYTES) / PAGE_ENTRY_SIZE_BYTES;
 
@@ -36,7 +37,19 @@ pub trait IHashTableHeaderPageRead<'a> {
     /// Number of Key & Value pairs the hash table can hold
     fn get_size(&self) -> Result<u32, HashTableHeaderError>;
     /// The next index to add a new entry
-    fn get_next_ind(&self) -> Result<u32, HashTableHeaderError>;
+    fn get_next_ind(&self) -> Result<usize, HashTableHeaderError>
+    where
+        Self: Sized,
+    {
+        let mut next_ind = 0;
+        while let Some(_) = self.get_block_page_id(next_ind)? {
+            next_ind += 1;
+            if next_ind >= Self::capacity_slots() {
+                return Err(HashTableHeaderError::NoMoreCapacity);
+            }
+        }
+        Ok(next_ind)
+    }
     /// The log sequence number
     fn get_lsn(&self) -> Result<u32, HashTableHeaderError>;
     /// Get the page ID at the given index
@@ -60,8 +73,6 @@ pub trait IHashTableHeaderPageWrite<'a>: IHashTableHeaderPageRead<'a> {
     fn set_page_id(&mut self, page_id: PageId) -> Result<(), HashTableHeaderError>;
     /// Set the number of Key & Value pairs the hash table can hold
     fn set_size(&mut self, size: u32) -> Result<(), HashTableHeaderError>;
-    /// Set the next index to add a new entry
-    fn set_next_ind(&mut self, next_ind: u32) -> Result<(), HashTableHeaderError>;
     /// Set the log sequence number
     fn set_lsn(&mut self, lsn: u32) -> Result<(), HashTableHeaderError>;
     /// Set the page ID at the given index
@@ -75,6 +86,14 @@ pub trait IHashTableHeaderPageWrite<'a>: IHashTableHeaderPageRead<'a> {
         &mut self,
         extension_page_id: Option<PageId>,
     ) -> Result<(), HashTableHeaderError>;
+    /// Higher-level function to add a block page ID to the header page in the next slot
+    fn add_block_page_id(&mut self, page_id: PageId) -> Result<(), HashTableHeaderError>
+    where
+        Self: Sized,
+    {
+        self.set_block_page_id(self.get_next_ind()?, Some(page_id))?;
+        Ok(())
+    }
 }
 
 pub struct BlockPageIdIterator<'a, 'b> {
@@ -121,10 +140,6 @@ impl<'a> IHashTableHeaderPageRead<'a> for ReadOnlyHashTableHeaderPage<'a> {
 
     fn get_size(&self) -> Result<u32, HashTableHeaderError> {
         self.read_single_at_offset(SIZE_OFFSET_BYTES)
-    }
-
-    fn get_next_ind(&self) -> Result<u32, HashTableHeaderError> {
-        self.read_single_at_offset(NEXT_IND_OFFSET_BYTES)
     }
 
     fn get_lsn(&self) -> Result<u32, HashTableHeaderError> {
@@ -195,7 +210,7 @@ impl<'a> WritableHashTableHeaderPage<'a> {
                 for i in 0..BLOCK_PAGE_IDS_COUNT {
                     self.set_block_page_id(i, None)?;
                 }
-                self.set_size(size);
+                self.set_size(size)?;
                 Ok(())
             }
             None => Err(HashTableHeaderError::NoPageId),
@@ -210,10 +225,6 @@ impl<'a> IHashTableHeaderPageRead<'a> for WritableHashTableHeaderPage<'a> {
 
     fn get_size(&self) -> Result<u32, HashTableHeaderError> {
         self.read_single_at_offset(SIZE_OFFSET_BYTES)
-    }
-
-    fn get_next_ind(&self) -> Result<u32, HashTableHeaderError> {
-        self.read_single_at_offset(NEXT_IND_OFFSET_BYTES)
     }
 
     fn get_lsn(&self) -> Result<u32, HashTableHeaderError> {
@@ -259,10 +270,6 @@ impl<'a> IHashTableHeaderPageWrite<'a> for WritableHashTableHeaderPage<'a> {
         self.write_single_at_offset(SIZE_OFFSET_BYTES, size)
     }
 
-    fn set_next_ind(&mut self, next_ind: u32) -> Result<(), HashTableHeaderError> {
-        self.write_single_at_offset(NEXT_IND_OFFSET_BYTES, next_ind)
-    }
-
     fn set_lsn(&mut self, lsn: u32) -> Result<(), HashTableHeaderError> {
         self.write_single_at_offset(LSN_OFFSET_BYTES, lsn)
     }
@@ -292,6 +299,8 @@ impl<'a> IHashTableHeaderPageWrite<'a> for WritableHashTableHeaderPage<'a> {
 
 #[cfg(test)]
 mod tests {
+    use core::num;
+
     use crate::dbms::buffer::pool_manager::{
         testing::create_testing_pool_manager, IBufferPoolManager,
     };
@@ -328,17 +337,25 @@ mod tests {
     }
 
     #[rstest]
-    fn test_writable_page_read_next_ind() {
+    #[case(1)]
+    #[case(2)]
+    #[case(100)]
+    fn test_writable_page_read_next_ind(#[case] num_pages: usize) {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
 
         let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+        hash_table_header_page.initialize(200).unwrap();
 
-        hash_table_header_page.set_next_ind(123).unwrap();
+        (0..num_pages).for_each(|i| {
+            hash_table_header_page
+                .add_block_page_id((i * 10) as u32)
+                .unwrap()
+        });
 
         let page_next_ind = hash_table_header_page.get_next_ind().unwrap();
 
-        assert_eq!(page_next_ind, 123);
+        assert_eq!(page_next_ind, num_pages);
     }
 
     #[rstest]
@@ -527,8 +544,9 @@ mod tests {
             for i in 0..11 {
                 let page = pool_manager.new_page().unwrap();
                 let mut tmp_hash_table_header_page = WritableHashTableHeaderPage { page };
-                tmp_hash_table_header_page.initialize(10).unwrap();
-                tmp_hash_table_header_page.set_next_ind(i * 5).unwrap();
+                tmp_hash_table_header_page.initialize(100).unwrap();
+                (0..i * 5)
+                    .for_each(|pg_id| tmp_hash_table_header_page.add_block_page_id(pg_id).unwrap());
             }
         }
 
@@ -546,7 +564,7 @@ mod tests {
 
                     let page_next_ind = hash_table_header_page_reader.get_next_ind().unwrap();
 
-                    assert_eq!(page_next_ind, i * 5);
+                    assert_eq!(page_next_ind, (i * 5) as usize);
                 }));
             }
         }
