@@ -299,8 +299,6 @@ impl<'a> IHashTableHeaderPageWrite<'a> for WritableHashTableHeaderPage<'a> {
 
 #[cfg(test)]
 mod tests {
-    use core::num;
-
     use crate::dbms::buffer::pool_manager::{
         testing::create_testing_pool_manager, IBufferPoolManager,
     };
@@ -356,6 +354,26 @@ mod tests {
         let page_next_ind = hash_table_header_page.get_next_ind().unwrap();
 
         assert_eq!(page_next_ind, num_pages);
+    }
+
+    #[rstest]
+    fn test_writable_page_read_next_ind_too_large() {
+        let pool_manager = create_testing_pool_manager(100);
+        let page = pool_manager.new_page().unwrap();
+
+        let mut hash_table_header_page = WritableHashTableHeaderPage { page };
+        hash_table_header_page.initialize(200).unwrap();
+
+        (0..WritableHashTableHeaderPage::capacity_slots())
+            .for_each(|i| hash_table_header_page.add_block_page_id(i as u32).unwrap());
+
+        let page_next_ind_res = hash_table_header_page.get_next_ind();
+
+        assert!(page_next_ind_res.is_err());
+        assert_eq!(
+            page_next_ind_res.unwrap_err(),
+            HashTableHeaderError::NoMoreCapacity
+        );
     }
 
     #[rstest]

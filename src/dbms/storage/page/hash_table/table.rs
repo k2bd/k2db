@@ -1,12 +1,11 @@
+use std::marker::PhantomData;
+
 use crate::dbms::{
-    buffer::{
-        pool_manager::{BufferPoolManagerError, IBufferPoolManager},
-        types::{ReadOnlyPage, WritablePage},
-    },
+    buffer::pool_manager::{BufferPoolManagerError, IBufferPoolManager},
     storage::{
         page::{
             hash_table::{
-                block::WritableHashTableBlockPage, header::IHashTableHeaderPageWrite,
+                header::IHashTableHeaderPageWrite,
                 header_extension::IHashTableHeaderExtensionPageWrite,
             },
             PageError,
@@ -17,11 +16,13 @@ use crate::dbms::{
 };
 
 use super::{
+    block::IHashTableBlockPageRead,
     header::{HashTableHeaderError, IHashTableHeaderPageRead, WritableHashTableHeaderPage},
     header_extension::{
         HashTableHeaderExtensionError, IHashTableHeaderExtensionPageRead,
         WritableHashTableHeaderExtensionPage,
     },
+    util::{calculate_block_page_layout, PageLayoutError},
 };
 
 pub enum HashTableInsertResult {
@@ -32,10 +33,14 @@ pub enum HashTableDeleteResult {
     Deleted,
     DidNotExist,
 }
+
+#[derive(Debug)]
 pub enum HashTableError {
+    NoSlotsInTable,
     BufferPoolManagerError(BufferPoolManagerError),
     HashTableHeaderError(HashTableHeaderError),
     HashTableHeaderExtensionError(HashTableHeaderExtensionError),
+    PageLayoutError(PageLayoutError),
     PageError(PageError),
 }
 
@@ -60,6 +65,12 @@ impl From<HashTableHeaderExtensionError> for HashTableError {
 impl From<PageError> for HashTableError {
     fn from(error: PageError) -> Self {
         HashTableError::PageError(error)
+    }
+}
+
+impl From<PageLayoutError> for HashTableError {
+    fn from(e: PageLayoutError) -> Self {
+        HashTableError::PageLayoutError(e)
     }
 }
 
@@ -103,11 +114,16 @@ pub trait IHashTable<KeyType: BytesSerialize, ValueType: BytesSerialize> {
     ) -> Result<HashTableDeleteResult, HashTableError>;
 }
 
-pub struct LinearProbingHashTable {
+pub struct LinearProbingHashTable<KeyType: BytesSerialize, ValueType: BytesSerialize> {
     header_page_id: PageId,
+
+    _key_type: std::marker::PhantomData<KeyType>,
+    _value_type: std::marker::PhantomData<ValueType>,
 }
 
-impl LinearProbingHashTable {
+impl<KeyType: BytesSerialize, ValueType: BytesSerialize>
+    LinearProbingHashTable<KeyType, ValueType>
+{
     /// Create a new hash table extension page, updating any other pages to
     /// point to it as needed
     fn add_hash_table_extension_page(
@@ -157,19 +173,48 @@ impl LinearProbingHashTable {
         Ok(new_extension_page_id)
     }
 
-    /// Create a new block page and add it to the header page
-    fn add_block_page<KeyType: BytesSerialize, ValueType: BytesSerialize>(
-        &self,
-        pool: &mut impl IBufferPoolManager,
-    ) -> Result<PageId, HashTableError> {
-        let new_page = pool.new_page()?;
-        let new_block_page_id = new_page.get_page_id()?.unwrap();
-        let mut new_block_page = WritableHashTableBlockPage::<KeyType, ValueType>::new(new_page);
+    /// Create a new block page and add it to the header page or an extension
+    /// as needed
+    fn add_block_page(&self, pool: &mut impl IBufferPoolManager) -> Result<PageId, HashTableError> {
+        let new_block_page_id;
+        {
+            let new_page = pool.new_page()?;
+            new_block_page_id = new_page.get_page_id()?.unwrap();
+            pool.unpin_page(new_block_page_id, true)?;
+        }
 
         let mut header_page =
             WritableHashTableHeaderPage::new(pool.fetch_page_writable(self.header_page_id)?);
 
-        Ok(new_block_page_id)
+        match header_page.add_block_page_id(new_block_page_id) {
+            Ok(_) => {
+                pool.unpin_page(self.header_page_id, true)?;
+                return Ok(new_block_page_id);
+            }
+            Err(HashTableHeaderError::NoMoreCapacity) => {
+                // Find the first extension page with space
+                let mut next_ext_page_res = header_page.get_extension_page_id()?;
+                while let Some(ext_page_id) = next_ext_page_res {
+                    let mut ext_page = WritableHashTableHeaderExtensionPage::new(
+                        pool.fetch_page_writable(ext_page_id)?,
+                    );
+                    if let Ok(_) = ext_page.add_block_page_id(new_block_page_id) {
+                        pool.unpin_page(ext_page_id, true)?;
+                        pool.unpin_page(self.header_page_id, false)?;
+                        return Ok(new_block_page_id);
+                    } else {
+                        next_ext_page_res = ext_page.get_next_extension_page_id()?;
+                        pool.unpin_page(ext_page_id, false)?;
+                    }
+                }
+                pool.unpin_page(self.header_page_id, false)?;
+                return Err(HashTableError::NoSlotsInTable);
+            }
+            Err(e) => {
+                pool.unpin_page(self.header_page_id, false)?;
+                return Err(HashTableError::HashTableHeaderError(e));
+            }
+        }
     }
 }
 
@@ -182,7 +227,7 @@ fn pages_required_for_slot(page_capacity: usize, slots: usize) -> usize {
 }
 
 impl<KeyType: BytesSerialize, ValueType: BytesSerialize> IHashTable<KeyType, ValueType>
-    for LinearProbingHashTable
+    for LinearProbingHashTable<KeyType, ValueType>
 {
     fn initialize(
         pool: &mut impl IBufferPoolManager,
@@ -190,7 +235,11 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize> IHashTable<KeyType, Val
     ) -> Result<Self, HashTableError> {
         let header_page_id: u32;
 
-        let res = Self { header_page_id: 0 };
+        let res = Self {
+            header_page_id: 0,
+            _key_type: PhantomData,
+            _value_type: PhantomData,
+        };
 
         {
             // Init header page
@@ -200,20 +249,32 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize> IHashTable<KeyType, Val
             header_page_id = header_page.get_page_id()?;
         }
 
-        let extension_slots_needed =
-            initial_table_size as usize - WritableHashTableHeaderPage::capacity_slots();
-        let extension_pages_needed = pages_required_for_slot(
-            WritableHashTableHeaderExtensionPage::capacity_slots(),
-            extension_slots_needed,
-        );
-        for _ in 0..extension_pages_needed {
-            res.add_hash_table_extension_page(pool)?;
+        let block_page_size =
+            calculate_block_page_layout(KeyType::serialized_size() + ValueType::serialized_size())?
+                .max_values;
+        let block_pages_needed =
+            pages_required_for_slot(block_page_size, initial_table_size as usize);
+
+        if block_pages_needed > WritableHashTableHeaderPage::capacity_slots() {
+            let extension_slots_needed =
+                block_pages_needed - WritableHashTableHeaderPage::capacity_slots();
+            let extension_pages_needed = pages_required_for_slot(
+                WritableHashTableHeaderExtensionPage::capacity_slots(),
+                extension_slots_needed,
+            );
+            for _ in 0..extension_pages_needed {
+                res.add_hash_table_extension_page(pool)?;
+            }
         }
 
-        // Init enough block pages for the size
+        for _ in 0..block_pages_needed {
+            res.add_block_page(pool)?;
+        }
 
-        pool.unpin_page(header_page_id, true)?;
-        Ok(Self { header_page_id })
+        {
+            pool.unpin_page(header_page_id, true)?;
+        }
+        Ok(res)
     }
 
     fn get_single_value(
@@ -253,6 +314,23 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize> IHashTable<KeyType, Val
 
 #[cfg(test)]
 mod tests {
+    use crate::{dbms::buffer::pool_manager::testing::create_testing_pool_manager, tuple_type};
+
     use super::*;
     use rstest::*;
+
+    #[rstest]
+    #[case(100, 100)]
+    #[case(5, 100)]
+    #[case(100, 5)]
+    #[case(100, 10000)]
+    fn test_initialize(#[case] buffer_pool_size: usize, #[case] initial_table_size: u32) {
+        let mut pool_manager = create_testing_pool_manager(buffer_pool_size);
+
+        let mut hash_table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+        >::initialize(&mut pool_manager, initial_table_size)
+        .unwrap();
+    }
 }

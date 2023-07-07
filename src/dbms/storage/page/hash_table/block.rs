@@ -8,24 +8,29 @@ use crate::dbms::{
     },
 };
 
-use super::util::{calculate_block_page_layout, PageLayout};
+use super::util::{calculate_block_page_layout, PageLayout, PageLayoutError};
 
 pub trait IHashTableBlockPageRead<'a, KeyType: BytesSerialize, ValueType: BytesSerialize> {
     fn key_at(&self, slot: usize) -> Result<KeyType, HashTableBlockError>;
     fn value_at(&self, slot: usize) -> Result<ValueType, HashTableBlockError>;
     fn slot_occupied(&self, slot: usize) -> Result<bool, HashTableBlockError>;
     fn slot_readable(&self, slot: usize) -> Result<bool, HashTableBlockError>;
-    fn num_slots(&self) -> usize;
+    fn num_slots(&self) -> Result<usize, HashTableBlockError> {
+        Ok(
+            calculate_block_page_layout(KeyType::serialized_size() + ValueType::serialized_size())?
+                .max_values,
+        )
+    }
     /// Iterate over entries in the page
     fn iter_entries<'b>(
         &'b self,
         from_slot: usize,
         to_slot: Option<usize>,
-    ) -> EntryIterator<'b, 'a, KeyType, ValueType>;
+    ) -> Result<EntryIterator<'b, 'a, KeyType, ValueType>, HashTableBlockError>;
     /// Fraction of entries that are filled
     fn fraction_slots_occupied(&self) -> Result<f32, HashTableBlockError> {
         let mut total = 0;
-        let num_slots = self.num_slots();
+        let num_slots = self.num_slots()?;
         for i in 0..num_slots {
             if self.slot_occupied(i)? {
                 total += 1;
@@ -51,6 +56,7 @@ pub trait IHashTableBlockPageWrite<'a, KeyType: BytesSerialize, ValueType: Bytes
 pub enum HashTableBlockError {
     PageError(PageError),
     SerializeError(SerializeError),
+    PageLayoutError(PageLayoutError),
     SlotNotReadable,
     SlotOccupied,
 }
@@ -64,6 +70,12 @@ impl From<PageError> for HashTableBlockError {
 impl From<SerializeError> for HashTableBlockError {
     fn from(e: SerializeError) -> Self {
         HashTableBlockError::SerializeError(e)
+    }
+}
+
+impl From<PageLayoutError> for HashTableBlockError {
+    fn from(e: PageLayoutError) -> Self {
+        HashTableBlockError::PageLayoutError(e)
     }
 }
 
@@ -81,17 +93,17 @@ impl<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize>
         block_page: &'a dyn IHashTableBlockPageRead<'a, KeyType, ValueType>,
         from_slot: usize,
         to_slot: Option<usize>,
-    ) -> Self {
+    ) -> Result<Self, HashTableBlockError> {
         let max_position = match to_slot {
             Some(to_slot) => to_slot,
-            None => block_page.num_slots(),
+            None => block_page.num_slots()?,
         };
-        Self {
+        Ok(Self {
             block_page,
             current_position: from_slot,
             max_position,
             _lifetime: PhantomData,
-        }
+        })
     }
 }
 
@@ -224,15 +236,11 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         self.read_readable(slot)
     }
 
-    fn num_slots(&self) -> usize {
-        self.layout.max_values
-    }
-
     fn iter_entries<'b>(
         &'b self,
         from_slot: usize,
         to_slot: Option<usize>,
-    ) -> EntryIterator<'b, 'a, KeyType, ValueType> {
+    ) -> Result<EntryIterator<'b, 'a, KeyType, ValueType>, HashTableBlockError> {
         EntryIterator::new(self, from_slot, to_slot)
     }
 }
@@ -375,15 +383,11 @@ impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
         self.read_readable(slot)
     }
 
-    fn num_slots(&self) -> usize {
-        self.layout.max_values
-    }
-
     fn iter_entries<'b>(
         &'b self,
         from_slot: usize,
         to_slot: Option<usize>,
-    ) -> EntryIterator<'b, 'a, KeyType, ValueType> {
+    ) -> Result<EntryIterator<'b, 'a, KeyType, ValueType>, HashTableBlockError> {
         EntryIterator::new(self, from_slot, to_slot)
     }
 }
@@ -568,14 +572,14 @@ mod tests {
             WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
 
         // Fill the page with key-value pairs
-        for i in 0..block_page.num_slots() {
+        for i in 0..block_page.num_slots().unwrap() {
             let key = tuple![i as u32];
             let value = tuple![true, i as f64 / 3f64];
             block_page.put_slot(i, key, value).unwrap();
         }
 
         // Read the key-value pairs back
-        for i in 0..block_page.num_slots() {
+        for i in 0..block_page.num_slots().unwrap() {
             let key = tuple![i as u32];
             let value = tuple![true, i as f64 / 3f64];
             let read_key = block_page.key_at(i).unwrap();
@@ -704,7 +708,7 @@ mod tests {
 
         assert_eq!(
             block_page.fraction_slots_occupied().unwrap(),
-            2f32 / block_page.num_slots() as f32
+            2f32 / block_page.num_slots().unwrap() as f32
         );
     }
 
@@ -718,7 +722,7 @@ mod tests {
             WritableHashTableBlockPage::<tuple_type![u32], tuple_type![bool, f64]>::new(page);
 
         // Fill the page with key-value pairs
-        for i in 0..block_page.num_slots() {
+        for i in 0..block_page.num_slots().unwrap() {
             if i % 2 == 0 {
                 continue;
             }
@@ -729,8 +733,8 @@ mod tests {
         }
 
         // Iterate over the entries
-        let mut iter = block_page.iter_entries(0, None);
-        for i in 0..block_page.num_slots() {
+        let mut iter = block_page.iter_entries(0, None).unwrap();
+        for i in 0..block_page.num_slots().unwrap() {
             let key = tuple![i as u32];
             let value = tuple![true, i as f64 / 3f64];
             let iter_val = iter.next().unwrap();
@@ -745,7 +749,7 @@ mod tests {
         }
 
         // Iterate over just a few entries
-        let iter = block_page.iter_entries(10, Some(14));
+        let iter = block_page.iter_entries(10, Some(14)).unwrap();
         let entries = iter.collect::<Vec<_>>();
         assert_eq!(entries.len(), 4);
         assert_eq!(
@@ -825,7 +829,7 @@ mod tests {
                             tuple_type![bool, f64],
                         >::new(page);
 
-                        let slots = block_page_reader.num_slots();
+                        let slots = block_page_reader.num_slots().unwrap();
                         assert_eq!(slots, 309);
                     }
                     bpm.unpin_page(i, false).unwrap();
@@ -1000,7 +1004,7 @@ mod tests {
                                 tuple_type![bool, f64],
                             >::new(page);
 
-                            let iter = block_page_reader.iter_entries(10, Some(13));
+                            let iter = block_page_reader.iter_entries(10, Some(13)).unwrap();
                             let values = iter.collect::<Vec<_>>();
                             assert_eq!(
                                 values,
