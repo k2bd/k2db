@@ -125,6 +125,10 @@ pub struct ReadOnlyHashTableHeaderExtensionPage<'a> {
 }
 
 impl<'a> ReadOnlyHashTableHeaderExtensionPage<'a> {
+    pub fn new(page: ReadOnlyPage<'a>) -> Self {
+        Self { page }
+    }
+
     fn read_single_at_offset(
         &self,
         offset_bytes: usize,

@@ -8,4 +8,5 @@ edition = "2021"
 rstest = "0.17.0"
 
 [dependencies]
-xxhash-rust = "0.8.6"
+rand = "0.8.5"
+xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
