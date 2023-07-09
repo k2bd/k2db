@@ -126,6 +126,10 @@ pub struct ReadOnlyHashTableHeaderPage<'a> {
 }
 
 impl<'a> ReadOnlyHashTableHeaderPage<'a> {
+    pub fn new(page: ReadOnlyPage<'a>) -> Self {
+        Self { page }
+    }
+
     fn read_single_at_offset(&self, offset_bytes: usize) -> Result<u32, HashTableHeaderError> {
         let data = self.page.read_data(offset_bytes, PAGE_ENTRY_SIZE_BYTES)?;
         let result = u32::from_be_bytes(data.as_slice().try_into().unwrap());

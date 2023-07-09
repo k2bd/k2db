@@ -5,7 +5,7 @@ use crate::dbms::{
     storage::{
         page::{
             hash_table::{
-                header::IHashTableHeaderPageWrite,
+                header::{IHashTableHeaderPageWrite, ReadOnlyHashTableHeaderPage},
                 header_extension::IHashTableHeaderExtensionPageWrite,
             },
             PageError,
@@ -180,38 +180,49 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize>
         {
             let new_page = pool.new_page()?;
             new_block_page_id = new_page.get_page_id()?.unwrap();
-            pool.unpin_page(new_block_page_id, true)?;
         }
 
-        let mut header_page =
-            WritableHashTableHeaderPage::new(pool.fetch_page_writable(self.header_page_id)?);
+        pool.unpin_page(new_block_page_id, true)?;
 
-        match header_page.add_block_page_id(new_block_page_id) {
+        let added_block_page_res;
+        {
+            let mut header_page =
+                WritableHashTableHeaderPage::new(pool.fetch_page_writable(self.header_page_id)?);
+            added_block_page_res = header_page.add_block_page_id(new_block_page_id);
+        }
+        pool.unpin_page(self.header_page_id, true)?;
+
+        match added_block_page_res {
             Ok(_) => {
                 pool.unpin_page(self.header_page_id, true)?;
+
                 return Ok(new_block_page_id);
             }
             Err(HashTableHeaderError::NoMoreCapacity) => {
                 // Find the first extension page with space
-                let mut next_ext_page_res = header_page.get_extension_page_id()?;
+                let mut next_ext_page_res;
+                {
+                    let header_page =
+                        ReadOnlyHashTableHeaderPage::new(pool.fetch_page(self.header_page_id)?);
+                    next_ext_page_res = header_page.get_extension_page_id()?;
+                }
+                pool.unpin_page(self.header_page_id, false)?;
+
                 while let Some(ext_page_id) = next_ext_page_res {
                     let mut ext_page = WritableHashTableHeaderExtensionPage::new(
                         pool.fetch_page_writable(ext_page_id)?,
                     );
                     if let Ok(_) = ext_page.add_block_page_id(new_block_page_id) {
                         pool.unpin_page(ext_page_id, true)?;
-                        pool.unpin_page(self.header_page_id, false)?;
                         return Ok(new_block_page_id);
                     } else {
                         next_ext_page_res = ext_page.get_next_extension_page_id()?;
                         pool.unpin_page(ext_page_id, false)?;
                     }
                 }
-                pool.unpin_page(self.header_page_id, false)?;
                 return Err(HashTableError::NoSlotsInTable);
             }
             Err(e) => {
-                pool.unpin_page(self.header_page_id, false)?;
                 return Err(HashTableError::HashTableHeaderError(e));
             }
         }
@@ -324,7 +335,12 @@ mod tests {
     #[case(5, 100)]
     #[case(100, 5)]
     #[case(100, 10000)]
-    fn test_initialize(#[case] buffer_pool_size: usize, #[case] initial_table_size: u32) {
+    #[case(100, 100000)]
+    /// Can initialize a hash table regardless of pool and table size
+    fn test_initialize_hash_table(
+        #[case] buffer_pool_size: usize,
+        #[case] initial_table_size: u32,
+    ) {
         let mut pool_manager = create_testing_pool_manager(buffer_pool_size);
 
         let mut hash_table = LinearProbingHashTable::<
