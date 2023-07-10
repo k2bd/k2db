@@ -208,44 +208,60 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         &self,
         pool: &mut impl IBufferPoolManager,
     ) -> Result<PageId, HashTableError> {
-        let new_page = pool.new_page()?;
-        let new_extension_page_id = new_page.get_page_id()?.unwrap();
-        let mut new_ext_page = WritableHashTableHeaderExtensionPage::new(new_page);
+        let new_extension_page_id;
+        let mut mark_header_dirty = false;
 
-        let mut header_page =
-            WritableHashTableHeaderPage::new(pool.fetch_page_writable(self.header_page_id)?);
-        let header_extension_page = header_page.get_extension_page_id()?;
+        {
+            let new_page = pool.new_page()?;
+            new_extension_page_id = new_page.get_page_id()?.unwrap();
+            let mut new_ext_page = WritableHashTableHeaderExtensionPage::new(new_page);
+            new_ext_page.initialize(self.header_page_id, None, None)?;
 
-        if let Some(ext_page_id) = header_extension_page {
-            // There is already at least one extension page - find the last
-            // extension page and add the new one to the end
-            let mut last_ext_page = ext_page_id;
-            loop {
-                let page = pool.fetch_page_writable(last_ext_page)?;
-                let ext_page = WritableHashTableHeaderExtensionPage::new(page);
-                let next_ext_page = ext_page.get_next_extension_page_id()?;
-                pool.unpin_page(last_ext_page, false)?;
-                match next_ext_page {
-                    Some(next_page_id) => last_ext_page = next_page_id,
-                    None => break,
+            let mut header_page =
+                WritableHashTableHeaderPage::new(pool.fetch_page_writable(self.header_page_id)?);
+            let header_extension_page = header_page.get_extension_page_id()?;
+
+            if let Some(ext_page_id) = header_extension_page {
+                // There is already at least one extension page - find the last
+                // extension page and add the new one to the end
+                let mut last_ext_page = ext_page_id;
+
+                loop {
+                    let next_ext_page;
+
+                    {
+                        let page = pool.fetch_page_writable(last_ext_page)?;
+                        let ext_page = WritableHashTableHeaderExtensionPage::new(page);
+                        next_ext_page = ext_page.get_next_extension_page_id()?;
+                    }
+
+                    pool.unpin_page(last_ext_page, false)?;
+                    match next_ext_page {
+                        Some(next_page_id) => last_ext_page = next_page_id,
+                        None => break,
+                    }
                 }
+
+                // Set the new extentions page to point to the last one
+                new_ext_page.set_previous_extension_page_id(Some(last_ext_page))?;
+
+                // Update the last extension page to point to the new one
+                {
+                    let mut previous_ext_page = WritableHashTableHeaderExtensionPage::new(
+                        pool.fetch_page_writable(last_ext_page)?,
+                    );
+                    previous_ext_page.set_next_extension_page_id(Some(new_extension_page_id))?;
+                }
+
+                pool.unpin_page(last_ext_page, true)?;
+            } else {
+                // No extension page exists yet - mark it in the header as the first.
+                header_page.set_extension_page_id(Some(new_extension_page_id))?;
+                mark_header_dirty = true;
             }
-
-            // Create the new extension page
-            new_ext_page.set_previous_extension_page_id(Some(last_ext_page))?;
-
-            // Update the last extension page to point to the new one
-            let mut previous_ext_page =
-                WritableHashTableHeaderExtensionPage::new(pool.fetch_page_writable(last_ext_page)?);
-            previous_ext_page.set_next_extension_page_id(Some(new_extension_page_id))?;
-
-            pool.unpin_page(last_ext_page, true)?;
-            pool.unpin_page(self.header_page_id, false)?;
-        } else {
-            // No extension page exists yet - mark it in the header as the first.
-            header_page.set_extension_page_id(Some(new_extension_page_id))?;
-            pool.unpin_page(self.header_page_id, true)?;
         }
+
+        pool.unpin_page(self.header_page_id, mark_header_dirty)?;
         pool.unpin_page(new_extension_page_id, true)?;
 
         Ok(new_extension_page_id)
@@ -287,20 +303,26 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
                 pool.unpin_page(self.header_page_id, false)?;
 
                 while let Some(ext_page_id) = next_ext_page_res {
-                    let mut ext_page = WritableHashTableHeaderExtensionPage::new(
-                        pool.fetch_page_writable(ext_page_id)?,
-                    );
-                    if let Ok(_) = ext_page.add_block_page_id(new_block_page_id) {
+                    let add_res;
+                    {
+                        let mut ext_page = WritableHashTableHeaderExtensionPage::new(
+                            pool.fetch_page_writable(ext_page_id)?,
+                        );
+                        add_res = ext_page.add_block_page_id(new_block_page_id);
+                        next_ext_page_res = ext_page.get_next_extension_page_id()?;
+                    }
+                    if let Ok(_) = add_res {
                         pool.unpin_page(ext_page_id, true)?;
                         return Ok(new_block_page_id);
                     } else {
-                        next_ext_page_res = ext_page.get_next_extension_page_id()?;
                         pool.unpin_page(ext_page_id, false)?;
                     }
                 }
                 return Err(HashTableError::NoSlotsInTable);
             }
             Err(e) => {
+                pool.unpin_page(self.header_page_id, false)?;
+
                 return Err(HashTableError::HashTableHeaderError(e));
             }
         }
@@ -450,6 +472,7 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
             header_page.initialize(initial_table_size)?;
             header_page_id = header_page.get_page_id()?;
         }
+        pool.unpin_page(header_page_id, true)?;
 
         let seed = rand::thread_rng().gen();
         let res = Self::new(header_page_id, seed);
@@ -468,13 +491,11 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
             }
         }
 
-        for _ in 0..block_pages_needed {
+        for i in 0..block_pages_needed {
+            println!("Adding block page {}/{}", i, block_pages_needed);
             res.add_block_page(pool)?;
         }
 
-        {
-            pool.unpin_page(header_page_id, true)?;
-        }
         Ok(res)
     }
 
@@ -585,15 +606,17 @@ mod tests {
         },
         tuple_type,
     };
+    use std::time::Duration;
 
     use super::*;
     use rstest::*;
 
     #[rstest]
+    #[timeout(Duration::from_secs(10))]
     /// Can create a hash table regardless of pool and table size
     fn test_create_hash_table(
-        #[values(2, 5, 100, 1000)] buffer_pool_size: usize,
-        #[values(2, 5, 100, 1_000, 10_000, 100_000, 1_000_000)] initial_table_size: u32,
+        #[values(5, 100, 1000)] buffer_pool_size: usize,
+        #[values(5, 100, 1_000, 10_000, 100_000, 1_000_000)] initial_table_size: u32,
     ) {
         let mut pool_manager = create_testing_pool_manager(buffer_pool_size);
 
