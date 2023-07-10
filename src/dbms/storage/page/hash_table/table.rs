@@ -186,7 +186,7 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
     fn get_hash_from_key(
         &self,
         pool: &impl IBufferPoolManager,
-        key: KeyType,
+        key: &KeyType,
     ) -> Result<usize, HashTableError> {
         let hash_fn = HashFn::new(self.hash_seed);
         let table_size;
@@ -438,12 +438,12 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         num_block_pages_for_size::<KeyType, ValueType>(self.size(pool)?)
     }
 
-    fn get_values_iter<'a>(
-        &'a self,
-        pool: &'a impl IBufferPoolManager,
+    fn get_all_addressed_values(
+        &self,
+        pool: &impl IBufferPoolManager,
         key: KeyType,
-    ) -> Result<impl Iterator<Item = ValueType> + 'a, HashTableError> {
-        let hash = self.get_hash_from_key(pool, key)?;
+    ) -> Result<Vec<(EntryAddress, ValueType)>, HashTableError> {
+        let hash = self.get_hash_from_key(pool, &key)?;
 
         let table_size = self.size(pool)?;
         let max_address = self.get_address_from_hash(pool, table_size - 1)?;
@@ -453,56 +453,64 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         let mut to_slot: Option<usize> = None;
         let mut wrapped = false;
 
+        let mut results: Vec<(EntryAddress, ValueType)> = Vec::new();
+
         let num_block_pages = self.num_block_pages(pool)?;
 
-        let iter = std::iter::from_fn(move || {
-            let block_page_id = self
-                .get_nth_block_page_id(pool, address.block_page_num)
-                .unwrap();
+        let mut search_done = false;
+        while !search_done {
+            let block_page_id = self.get_nth_block_page_id(pool, address.block_page_num)?;
 
-            let block_page = ReadOnlyHashTableBlockPage::<KeyType, ValueType>::new(
-                pool.fetch_page(block_page_id).ok()?,
-            );
-            let s = match (
-                to_slot,
-                original_address.block_page_num == address.block_page_num,
-            ) {
-                (None, true) => Some(original_address.slot),
-                (None, false) => None,
-                (Some(t), true) => Some(t.min(max_address.slot)),
-                (Some(t), false) => Some(t),
-            };
-            let entries_iter = block_page
-                .iter_entries(address.slot, s)
-                .ok()?
-                .filter_map(|entry| {
+            {
+                let block_page = ReadOnlyHashTableBlockPage::<KeyType, ValueType>::new(
+                    pool.fetch_page(block_page_id)?,
+                );
+                let s = match (
+                    to_slot,
+                    original_address.block_page_num == address.block_page_num,
+                ) {
+                    (None, true) => Some(original_address.slot),
+                    (None, false) => None,
+                    (Some(t), true) => Some(t.min(max_address.slot)),
+                    (Some(t), false) => Some(t),
+                };
+                let entries_iter = block_page.iter_entries(address.slot, s)?;
+
+                'entries: for (i, entry) in entries_iter.enumerate() {
                     if entry.occupied {
                         if let Some((k, v)) = entry.entry {
                             if k == key {
-                                return Some(v);
+                                let entry_address = EntryAddress {
+                                    block_page_num: address.block_page_num,
+                                    slot: address.slot + i,
+                                };
+                                results.push((entry_address, v));
                             }
                         }
+                    } else {
+                        // We reached an empty slot, so we can stop searching
+                        search_done = true;
+                        break 'entries;
                     }
-                    None
-                });
+                }
 
-            address = EntryAddress {
-                block_page_num: (address.block_page_num + 1) % num_block_pages,
-                slot: 0,
-            };
-            if wrapped {
-                None
-            } else if address.block_page_num == original_address.block_page_num {
-                to_slot = Some(original_address.slot);
-                wrapped = true;
-                Some(entries_iter)
-            } else {
-                Some(entries_iter)
+                // We reached the end of the block page without finding the key
+                // so we need to continue searching in the next block page
+                address = EntryAddress {
+                    block_page_num: (address.block_page_num + 1) % num_block_pages,
+                    slot: 0,
+                };
+                if wrapped {
+                    search_done = true;
+                } else if address.block_page_num == original_address.block_page_num {
+                    to_slot = Some(original_address.slot);
+                    wrapped = true;
+                };
             }
-        })
-        .flatten();
+            pool.unpin_page(block_page_id, false)?;
+        }
 
-        Ok(iter)
+        Ok(results)
     }
 }
 
@@ -570,8 +578,14 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         pool: &impl IBufferPoolManager,
         key: KeyType,
     ) -> Result<Option<ValueType>, HashTableError> {
-        let mut iter = self.get_values_iter(pool, key)?;
-        Ok(iter.next())
+        // N.b. terrible inefficient implementation for now, later we can
+        // optimize with an `iter_values` method
+        let mut values = self.get_all_values(pool, key)?;
+        if let Some(v) = values.pop() {
+            Ok(Some(v))
+        } else {
+            Ok(None)
+        }
     }
 
     fn get_all_values(
@@ -579,8 +593,11 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         pool: &impl IBufferPoolManager,
         key: KeyType,
     ) -> Result<Vec<ValueType>, HashTableError> {
-        let mut iter = self.get_values_iter(pool, key)?;
-        Ok(iter.collect())
+        Ok(self
+            .get_all_addressed_values(pool, key)?
+            .into_iter()
+            .map(|(_, v)| v)
+            .collect())
     }
 
     fn insert_entry(
@@ -589,8 +606,6 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         key: KeyType,
         value: ValueType,
     ) -> Result<HashTableInsertResult, HashTableError> {
-        // Prevent duplicates
-        // Linear probing insert
         todo!()
     }
 
