@@ -107,16 +107,26 @@ impl<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize>
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub struct EntryIteratorValue<KeyType: BytesSerialize, ValueType: BytesSerialize> {
+    pub entry: Option<(KeyType, ValueType)>,
+    pub occupied: bool,
+}
+
 impl<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize> Iterator
     for EntryIterator<'a, 'b, KeyType, ValueType>
 {
-    type Item = Option<(KeyType, ValueType)>;
+    type Item = EntryIteratorValue<KeyType, ValueType>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.current_position >= self.max_position {
             // Stop iteration
             return None;
         }
+        let occupied = self
+            .block_page
+            .slot_occupied(self.current_position)
+            .unwrap();
         let readable = self
             .block_page
             .slot_readable(self.current_position)
@@ -124,12 +134,18 @@ impl<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize> Iterator
         if !readable {
             self.current_position += 1;
             // Empty slot
-            return Some(None);
+            return Some(EntryIteratorValue {
+                entry: None,
+                occupied,
+            });
         }
         let key = self.block_page.key_at(self.current_position).unwrap();
         let value = self.block_page.value_at(self.current_position).unwrap();
         self.current_position += 1;
-        Some(Some((key, value)))
+        Some(EntryIteratorValue {
+            entry: Some((key, value)),
+            occupied,
+        })
     }
 }
 
@@ -739,12 +755,17 @@ mod tests {
             let value = tuple![true, i as f64 / 3f64];
             let iter_val = iter.next().unwrap();
 
+            let iter_entry = iter_val.entry;
+            let iter_occupied = iter_val.occupied;
+
             if i % 2 == 0 {
-                assert!(iter_val.is_none());
+                assert!(iter_entry.is_none());
+                assert!(!iter_occupied);
             } else {
-                let (read_key, read_value) = iter_val.unwrap();
+                let (read_key, read_value) = iter_entry.unwrap();
                 assert_eq!(read_key, key);
                 assert_eq!(read_value, value);
+                assert!(iter_occupied);
             }
         }
 
@@ -755,10 +776,22 @@ mod tests {
         assert_eq!(
             entries,
             vec![
-                None,
-                Some((tuple![11u32], tuple![true, 11f64 / 3f64])),
-                None,
-                Some((tuple![13u32], tuple![true, 13f64 / 3f64])),
+                EntryIteratorValue {
+                    entry: None,
+                    occupied: false
+                },
+                EntryIteratorValue {
+                    entry: Some((tuple![11u32], tuple![true, 11f64 / 3f64])),
+                    occupied: true
+                },
+                EntryIteratorValue {
+                    entry: None,
+                    occupied: false
+                },
+                EntryIteratorValue {
+                    entry: Some((tuple![13u32], tuple![true, 13f64 / 3f64])),
+                    occupied: true
+                },
             ]
         );
     }
@@ -1004,14 +1037,27 @@ mod tests {
                                 tuple_type![bool, f64],
                             >::new(page);
 
-                            let iter = block_page_reader.iter_entries(10, Some(13)).unwrap();
+                            let iter = block_page_reader.iter_entries(10, Some(14)).unwrap();
                             let values = iter.collect::<Vec<_>>();
                             assert_eq!(
                                 values,
                                 vec![
-                                    Some((tuple![90], tuple![false, 1.23])),
-                                    None,
-                                    Some((tuple![70], tuple![true, 3.45])),
+                                    EntryIteratorValue {
+                                        entry: Some((tuple![90], tuple![false, 1.23])),
+                                        occupied: true
+                                    },
+                                    EntryIteratorValue {
+                                        entry: None,
+                                        occupied: true
+                                    },
+                                    EntryIteratorValue {
+                                        entry: Some((tuple![70], tuple![true, 3.45])),
+                                        occupied: true
+                                    },
+                                    EntryIteratorValue {
+                                        entry: None,
+                                        occupied: false
+                                    },
                                 ]
                             );
                         }

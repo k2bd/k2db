@@ -20,7 +20,7 @@ use crate::dbms::{
 };
 
 use super::{
-    block::{HashTableBlockError, IHashTableBlockPageRead},
+    block::{EntryIterator, HashTableBlockError, IHashTableBlockPageRead},
     hash_function::{HashFunction, XxHashFunction},
     header::{HashTableHeaderError, IHashTableHeaderPageRead, WritableHashTableHeaderPage},
     header_extension::{
@@ -437,6 +437,73 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
     fn num_block_pages(&self, pool: &impl IBufferPoolManager) -> Result<usize, HashTableError> {
         num_block_pages_for_size::<KeyType, ValueType>(self.size(pool)?)
     }
+
+    fn get_values_iter<'a>(
+        &'a self,
+        pool: &'a impl IBufferPoolManager,
+        key: KeyType,
+    ) -> Result<impl Iterator<Item = ValueType> + 'a, HashTableError> {
+        let hash = self.get_hash_from_key(pool, key)?;
+
+        let table_size = self.size(pool)?;
+        let max_address = self.get_address_from_hash(pool, table_size - 1)?;
+
+        let original_address = self.get_address_from_hash(pool, hash)?;
+        let mut address = original_address.clone();
+        let mut to_slot: Option<usize> = None;
+        let mut wrapped = false;
+
+        let num_block_pages = self.num_block_pages(pool)?;
+
+        let iter = std::iter::from_fn(move || {
+            let block_page_id = self
+                .get_nth_block_page_id(pool, address.block_page_num)
+                .unwrap();
+
+            let block_page = ReadOnlyHashTableBlockPage::<KeyType, ValueType>::new(
+                pool.fetch_page(block_page_id).ok()?,
+            );
+            let s = match (
+                to_slot,
+                original_address.block_page_num == address.block_page_num,
+            ) {
+                (None, true) => Some(original_address.slot),
+                (None, false) => None,
+                (Some(t), true) => Some(t.min(max_address.slot)),
+                (Some(t), false) => Some(t),
+            };
+            let entries_iter = block_page
+                .iter_entries(address.slot, s)
+                .ok()?
+                .filter_map(|entry| {
+                    if entry.occupied {
+                        if let Some((k, v)) = entry.entry {
+                            if k == key {
+                                return Some(v);
+                            }
+                        }
+                    }
+                    None
+                });
+
+            address = EntryAddress {
+                block_page_num: (address.block_page_num + 1) % num_block_pages,
+                slot: 0,
+            };
+            if wrapped {
+                None
+            } else if address.block_page_num == original_address.block_page_num {
+                to_slot = Some(original_address.slot);
+                wrapped = true;
+                Some(entries_iter)
+            } else {
+                Some(entries_iter)
+            }
+        })
+        .flatten();
+
+        Ok(iter)
+    }
 }
 
 fn pages_required_for_slot(page_capacity: usize, slots: usize) -> usize {
@@ -492,7 +559,6 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         }
 
         for i in 0..block_pages_needed {
-            println!("Adding block page {}/{}", i, block_pages_needed);
             res.add_block_page(pool)?;
         }
 
@@ -504,70 +570,8 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         pool: &impl IBufferPoolManager,
         key: KeyType,
     ) -> Result<Option<ValueType>, HashTableError> {
-        let hash = self.get_hash_from_key(pool, key)?;
-
-        let table_size = self.size(pool)?;
-        let max_address = self.get_address_from_hash(pool, table_size - 1)?;
-
-        let original_address = self.get_address_from_hash(pool, hash)?;
-        let mut address = original_address.clone();
-        let mut to_slot: Option<usize> = None;
-        let mut wrapped = false;
-
-        let mut result: Option<ValueType> = None;
-
-        let num_block_pages = self.num_block_pages(pool)?;
-
-        let mut search_done = false;
-        while !search_done {
-            let block_page_id = self.get_nth_block_page_id(pool, address.block_page_num)?;
-
-            {
-                let block_page = ReadOnlyHashTableBlockPage::<KeyType, ValueType>::new(
-                    pool.fetch_page(block_page_id)?,
-                );
-                let s = match (
-                    to_slot,
-                    original_address.block_page_num == address.block_page_num,
-                ) {
-                    (None, true) => Some(original_address.slot),
-                    (None, false) => None,
-                    (Some(t), true) => Some(t.min(max_address.slot)),
-                    (Some(t), false) => Some(t),
-                };
-                let entries_iter = block_page.iter_entries(address.slot, s)?;
-
-                'entries: for entry in entries_iter {
-                    if let Some((key, value)) = entry {
-                        if key == key {
-                            result = Some(value);
-                            search_done = true;
-                            break 'entries;
-                        }
-                    } else {
-                        // We reached an empty slot, so we can stop searching
-                        search_done = true;
-                        break 'entries;
-                    }
-                }
-
-                // We reached the end of the block page without finding the key
-                // so we need to continue searching in the next block page
-                address = EntryAddress {
-                    block_page_num: (address.block_page_num + 1) % num_block_pages,
-                    slot: 0,
-                };
-                if wrapped {
-                    search_done = true;
-                } else if address.block_page_num == original_address.block_page_num {
-                    to_slot = Some(original_address.slot);
-                    wrapped = true;
-                };
-            }
-            pool.unpin_page(block_page_id, false)?;
-        }
-
-        todo!()
+        let mut iter = self.get_values_iter(pool, key)?;
+        Ok(iter.next())
     }
 
     fn get_all_values(
@@ -575,7 +579,8 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         pool: &impl IBufferPoolManager,
         key: KeyType,
     ) -> Result<Vec<ValueType>, HashTableError> {
-        todo!()
+        let mut iter = self.get_values_iter(pool, key)?;
+        Ok(iter.collect())
     }
 
     fn insert_entry(
@@ -584,6 +589,8 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         key: KeyType,
         value: ValueType,
     ) -> Result<HashTableInsertResult, HashTableError> {
+        // Prevent duplicates
+        // Linear probing insert
         todo!()
     }
 
