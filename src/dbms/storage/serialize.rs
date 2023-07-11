@@ -6,7 +6,7 @@ pub enum SerializeError {
 
 /// Trait for serializing and deserializing a struct to and from a fixed size
 /// byte array.
-pub trait BytesSerialize: PartialEq {
+pub trait BytesSerialize: PartialEq + Clone {
     fn to_bytes(&self) -> Result<Vec<u8>, SerializeError>;
     fn from_bytes(bytes: Vec<u8>) -> Result<Self, SerializeError>
     where

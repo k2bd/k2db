@@ -36,6 +36,6 @@ impl HashFunction for ConstHashFunction {
     }
 
     fn hash(&self, _key: &[u8], _table_size: usize) -> usize {
-        (self.hash_val % (usize::MAX as u64)) as usize
+        (self.hash_val % _table_size as u64) as usize
     }
 }

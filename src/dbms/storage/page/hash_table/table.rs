@@ -6,7 +6,10 @@ use crate::dbms::{
     storage::{
         page::{
             hash_table::{
-                block::ReadOnlyHashTableBlockPage,
+                block::{
+                    self, IHashTableBlockPageWrite, ReadOnlyHashTableBlockPage,
+                    WritableHashTableBlockPage,
+                },
                 header::{IHashTableHeaderPageWrite, ReadOnlyHashTableHeaderPage},
                 header_extension::{
                     IHashTableHeaderExtensionPageWrite, ReadOnlyHashTableHeaderExtensionPage,
@@ -30,10 +33,13 @@ use super::{
     util::{calculate_block_page_layout, PageLayoutError},
 };
 
+#[derive(Debug, PartialEq)]
 pub enum HashTableInsertResult {
     Inserted,
     DuplicateEntry,
 }
+
+#[derive(Debug, PartialEq)]
 pub enum HashTableDeleteResult {
     Deleted,
     DidNotExist,
@@ -438,12 +444,13 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         num_block_pages_for_size::<KeyType, ValueType>(self.size(pool)?)
     }
 
-    fn get_all_addressed_values(
+    fn get_addressed_values(
         &self,
         pool: &impl IBufferPoolManager,
-        key: KeyType,
+        key: &KeyType,
+        max_returned: Option<usize>,
     ) -> Result<Vec<(EntryAddress, ValueType)>, HashTableError> {
-        let hash = self.get_hash_from_key(pool, &key)?;
+        let hash = self.get_hash_from_key(pool, key)?;
 
         let table_size = self.size(pool)?;
         let max_address = self.get_address_from_hash(pool, table_size - 1)?;
@@ -479,12 +486,18 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
                 'entries: for (i, entry) in entries_iter.enumerate() {
                     if entry.occupied {
                         if let Some((k, v)) = entry.entry {
-                            if k == key {
+                            if k == *key {
                                 let entry_address = EntryAddress {
                                     block_page_num: address.block_page_num,
                                     slot: address.slot + i,
                                 };
                                 results.push((entry_address, v));
+                                if let Some(max_returned) = max_returned {
+                                    if results.len() >= max_returned {
+                                        search_done = true;
+                                        break 'entries;
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -578,11 +591,9 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         pool: &impl IBufferPoolManager,
         key: KeyType,
     ) -> Result<Option<ValueType>, HashTableError> {
-        // N.b. terrible inefficient implementation for now, later we can
-        // optimize with an `iter_values` method
-        let mut values = self.get_all_values(pool, key)?;
-        if let Some(v) = values.pop() {
-            Ok(Some(v))
+        let mut results = self.get_addressed_values(pool, &key, Some(1))?;
+        if let Some(r) = results.pop() {
+            Ok(Some(r.1))
         } else {
             Ok(None)
         }
@@ -594,7 +605,7 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         key: KeyType,
     ) -> Result<Vec<ValueType>, HashTableError> {
         Ok(self
-            .get_all_addressed_values(pool, key)?
+            .get_addressed_values(pool, &key, None)?
             .into_iter()
             .map(|(_, v)| v)
             .collect())
@@ -606,7 +617,87 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         key: KeyType,
         value: ValueType,
     ) -> Result<HashTableInsertResult, HashTableError> {
-        todo!()
+        // self.get_all_values(pool, key)?.contains(&value)
+        if self
+            .get_addressed_values(pool, &key, None)?
+            .iter()
+            .find(|(_, v)| v == &value)
+            .is_some()
+        {
+            return Ok(HashTableInsertResult::DuplicateEntry);
+        }
+
+        let hash = self.get_hash_from_key(pool, &key)?;
+
+        let table_size = self.size(pool)?;
+        let max_address = self.get_address_from_hash(pool, table_size - 1)?;
+
+        let original_address = self.get_address_from_hash(pool, hash)?;
+        let mut address = original_address.clone();
+        let mut to_slot: Option<usize> = None;
+        let mut wrapped = false;
+
+        let num_block_pages = self.num_block_pages(pool)?;
+
+        let mut search_done = false;
+        let mut slot_result: Option<usize> = None;
+        while !search_done {
+            let block_page_id = self.get_nth_block_page_id(pool, address.block_page_num)?;
+
+            {
+                let mut block_page = WritableHashTableBlockPage::<KeyType, ValueType>::new(
+                    pool.fetch_page_writable(block_page_id)?,
+                );
+                let s = match (
+                    to_slot,
+                    original_address.block_page_num == address.block_page_num,
+                ) {
+                    (None, true) => Some(original_address.slot),
+                    (None, false) => None,
+                    (Some(t), true) => Some(t.min(max_address.slot)),
+                    (Some(t), false) => Some(t),
+                };
+                {
+                    let entries_iter = block_page.iter_entries(address.slot, s)?;
+
+                    'entries: for (i, entry) in entries_iter.enumerate() {
+                        if !entry.occupied {
+                            // Found the first empty slot at this key's hash
+                            search_done = true;
+                            let slot = address.slot + i;
+                            slot_result = Some(slot);
+                            break 'entries;
+                        }
+                    }
+                }
+
+                if let Some(slot) = slot_result {
+                    block_page.put_slot(slot, key.clone(), value.clone())?;
+                }
+
+                // We reached the end of the block page without finding an
+                // empty slot, so we need to continue searching in the next
+                // block page
+                address = EntryAddress {
+                    block_page_num: (address.block_page_num + 1) % num_block_pages,
+                    slot: 0,
+                };
+                if wrapped {
+                    search_done = true;
+                } else if address.block_page_num == original_address.block_page_num {
+                    to_slot = Some(original_address.slot);
+                    wrapped = true;
+                };
+            }
+            pool.unpin_page(block_page_id, false)?;
+        }
+
+        if let Some(_) = slot_result {
+            Ok(HashTableInsertResult::Inserted)
+        } else {
+            // TODO: double table size and try again
+            Err(HashTableError::NoSlotsInTable)
+        }
     }
 
     fn delete_entry(
@@ -615,6 +706,15 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         key: KeyType,
         value: ValueType,
     ) -> Result<HashTableDeleteResult, HashTableError> {
+        if self
+            .get_addressed_values(pool, &key, None)?
+            .iter()
+            .find(|(_, v)| v == &value)
+            .is_none()
+        {
+            return Ok(HashTableDeleteResult::DidNotExist);
+        }
+
         todo!()
     }
 }
@@ -626,7 +726,7 @@ mod tests {
             buffer::pool_manager::testing::create_testing_pool_manager,
             storage::page::hash_table::hash_function::ConstHashFunction,
         },
-        tuple_type,
+        tuple, tuple_type,
     };
     use std::time::Duration;
 
@@ -650,5 +750,122 @@ mod tests {
     }
 
     #[rstest]
-    fn test_add_and_get_hash_table_values_xxhash() {}
+    fn test_add_and_get_hash_table_value_xxhash() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            XxHashFunction,
+        >::create(&mut pool_manager, 1000)
+        .unwrap();
+
+        let insert_result = table
+            .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
+            .unwrap();
+        assert_eq!(insert_result, HashTableInsertResult::Inserted);
+
+        let get_result = table
+            .get_single_value(&pool_manager, tuple![1, true])
+            .unwrap();
+        assert_eq!(get_result, Some(tuple![1.0, 1, true]));
+    }
+
+    #[rstest]
+    fn test_add_and_get_hash_table_value_const_hash() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            ConstHashFunction,
+        >::create(&mut pool_manager, 1000)
+        .unwrap();
+
+        let insert_result = table
+            .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
+            .unwrap();
+        assert_eq!(insert_result, HashTableInsertResult::Inserted);
+
+        let get_result = table
+            .get_single_value(&pool_manager, tuple![1, true])
+            .unwrap();
+        assert_eq!(get_result, Some(tuple![1.0, 1, true]));
+    }
+
+    #[rstest]
+    fn test_add_and_get_hash_table_values_xxhash() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            XxHashFunction,
+        >::create(&mut pool_manager, 1000)
+        .unwrap();
+
+        let insert_result = table
+            .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
+            .unwrap();
+        assert_eq!(insert_result, HashTableInsertResult::Inserted);
+        let insert_result = table
+            .insert_entry(&mut pool_manager, tuple![2, false], tuple![2.1, 2, true])
+            .unwrap();
+        assert_eq!(insert_result, HashTableInsertResult::Inserted);
+        let insert_result = table
+            .insert_entry(&mut pool_manager, tuple![3, true], tuple![3.2, 3, true])
+            .unwrap();
+        assert_eq!(insert_result, HashTableInsertResult::Inserted);
+
+        let get_result = table
+            .get_single_value(&pool_manager, tuple![1, true])
+            .unwrap();
+        assert_eq!(get_result, Some(tuple![1.0, 1, true]));
+        let get_result = table
+            .get_single_value(&pool_manager, tuple![2, false])
+            .unwrap();
+        assert_eq!(get_result, Some(tuple![2.1, 2, true]));
+        let get_result = table
+            .get_single_value(&pool_manager, tuple![3, true])
+            .unwrap();
+        assert_eq!(get_result, Some(tuple![3.2, 3, true]));
+    }
+
+    #[rstest]
+    fn test_add_and_get_hash_table_values_const_hash() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            ConstHashFunction,
+        >::create(&mut pool_manager, 1000)
+        .unwrap();
+
+        let insert_result = table
+            .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
+            .unwrap();
+        assert_eq!(insert_result, HashTableInsertResult::Inserted);
+        let insert_result = table
+            .insert_entry(&mut pool_manager, tuple![2, false], tuple![2.1, 2, true])
+            .unwrap();
+        assert_eq!(insert_result, HashTableInsertResult::Inserted);
+        let insert_result = table
+            .insert_entry(&mut pool_manager, tuple![3, true], tuple![3.2, 3, true])
+            .unwrap();
+        assert_eq!(insert_result, HashTableInsertResult::Inserted);
+
+        let get_result = table
+            .get_single_value(&pool_manager, tuple![1, true])
+            .unwrap();
+        assert_eq!(get_result, Some(tuple![1.0, 1, true]));
+        let get_result = table
+            .get_single_value(&pool_manager, tuple![2, false])
+            .unwrap();
+        assert_eq!(get_result, Some(tuple![2.1, 2, true]));
+        let get_result = table
+            .get_single_value(&pool_manager, tuple![3, true])
+            .unwrap();
+        assert_eq!(get_result, Some(tuple![3.2, 3, true]));
+    }
 }
