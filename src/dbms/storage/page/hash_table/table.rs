@@ -1,5 +1,5 @@
 use rand::Rng;
-use std::{collections::hash_map::Entry, marker::PhantomData};
+use std::marker::PhantomData;
 
 use crate::dbms::{
     buffer::pool_manager::{BufferPoolManagerError, IBufferPoolManager},
@@ -7,7 +7,7 @@ use crate::dbms::{
         page::{
             hash_table::{
                 block::{
-                    self, IHashTableBlockPageWrite, ReadOnlyHashTableBlockPage,
+                    IHashTableBlockPageWrite, ReadOnlyHashTableBlockPage,
                     WritableHashTableBlockPage,
                 },
                 header::{IHashTableHeaderPageWrite, ReadOnlyHashTableHeaderPage},
@@ -23,8 +23,8 @@ use crate::dbms::{
 };
 
 use super::{
-    block::{EntryIterator, HashTableBlockError, IHashTableBlockPageRead},
-    hash_function::{HashFunction, XxHashFunction},
+    block::{HashTableBlockError, IHashTableBlockPageRead},
+    hash_function::HashFunction,
     header::{HashTableHeaderError, IHashTableHeaderPageRead, WritableHashTableHeaderPage},
     header_extension::{
         HashTableHeaderExtensionError, IHashTableHeaderExtensionPageRead,
@@ -33,13 +33,13 @@ use super::{
     util::{calculate_block_page_layout, PageLayoutError},
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HashTableInsertResult {
     Inserted,
     DuplicateEntry,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HashTableDeleteResult {
     Deleted,
     DidNotExist,
@@ -171,11 +171,7 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         }
     }
 
-    fn get_address_from_hash(
-        &self,
-        pool: &impl IBufferPoolManager,
-        offset: usize,
-    ) -> Result<EntryAddress, HashTableError> {
+    fn get_address_from_hash(&self, offset: usize) -> Result<EntryAddress, HashTableError> {
         let block_page_size =
             calculate_block_page_layout(KeyType::serialized_size() + ValueType::serialized_size())?
                 .max_values;
@@ -296,7 +292,7 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
             Ok(_) => {
                 pool.unpin_page(self.header_page_id, true)?;
 
-                return Ok(new_block_page_id);
+                Ok(new_block_page_id)
             }
             Err(HashTableHeaderError::NoMoreCapacity) => {
                 // Find the first extension page with space
@@ -317,19 +313,19 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
                         add_res = ext_page.add_block_page_id(new_block_page_id);
                         next_ext_page_res = ext_page.get_next_extension_page_id()?;
                     }
-                    if let Ok(_) = add_res {
+                    if add_res.is_ok() {
                         pool.unpin_page(ext_page_id, true)?;
                         return Ok(new_block_page_id);
                     } else {
                         pool.unpin_page(ext_page_id, false)?;
                     }
                 }
-                return Err(HashTableError::NoSlotsInTable);
+                Err(HashTableError::NoSlotsInTable)
             }
             Err(e) => {
                 pool.unpin_page(self.header_page_id, false)?;
 
-                return Err(HashTableError::HashTableHeaderError(e));
+                Err(HashTableError::HashTableHeaderError(e))
             }
         }
     }
@@ -354,14 +350,12 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
             match block_page_res {
                 Ok(page_id) => {
                     if let Some(page_id) = page_id {
-                        return Ok(page_id);
+                        Ok(page_id)
                     } else {
                         panic!("No block page id found for slot {}", n);
                     }
                 }
-                Err(e) => {
-                    return Err(HashTableError::HashTableHeaderError(e));
-                }
+                Err(e) => Err(HashTableError::HashTableHeaderError(e)),
             }
         } else {
             let n = n - ReadOnlyHashTableHeaderPage::capacity_slots();
@@ -408,14 +402,12 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
                     match block_page_res {
                         Ok(page_id) => {
                             if let Some(page_id) = page_id {
-                                return Ok(page_id);
+                                Ok(page_id)
                             } else {
                                 panic!("No block page id found for slot {}", n);
                             }
                         }
-                        Err(e) => {
-                            return Err(HashTableError::HashTableHeaderExtensionError(e));
-                        }
+                        Err(e) => Err(HashTableError::HashTableHeaderExtensionError(e)),
                     }
                 } else {
                     panic!("Hash table is corrupt - extension page required but none found");
@@ -424,6 +416,7 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         }
     }
 
+    #[allow(dead_code)]
     fn double_table_size(&self) {
         todo!()
     }
@@ -453,10 +446,10 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         let hash = self.get_hash_from_key(pool, key)?;
 
         let table_size = self.size(pool)?;
-        let max_address = self.get_address_from_hash(pool, table_size - 1)?;
+        let max_address = self.get_address_from_hash(table_size - 1)?;
 
-        let original_address = self.get_address_from_hash(pool, hash)?;
-        let mut address = original_address.clone();
+        let original_address = self.get_address_from_hash(hash)?;
+        let mut address = original_address;
         let mut to_slot: Option<usize> = None;
         let mut wrapped = false;
 
@@ -579,7 +572,7 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
             }
         }
 
-        for i in 0..block_pages_needed {
+        for _ in 0..block_pages_needed {
             res.add_block_page(pool)?;
         }
 
@@ -617,23 +610,13 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         key: KeyType,
         value: ValueType,
     ) -> Result<HashTableInsertResult, HashTableError> {
-        // self.get_all_values(pool, key)?.contains(&value)
-        if self
-            .get_addressed_values(pool, &key, None)?
-            .iter()
-            .find(|(_, v)| v == &value)
-            .is_some()
-        {
-            return Ok(HashTableInsertResult::DuplicateEntry);
-        }
-
         let hash = self.get_hash_from_key(pool, &key)?;
 
         let table_size = self.size(pool)?;
-        let max_address = self.get_address_from_hash(pool, table_size - 1)?;
+        let max_address = self.get_address_from_hash(table_size - 1)?;
 
-        let original_address = self.get_address_from_hash(pool, hash)?;
-        let mut address = original_address.clone();
+        let original_address = self.get_address_from_hash(hash)?;
+        let mut address = original_address;
         let mut to_slot: Option<usize> = None;
         let mut wrapped = false;
 
@@ -641,6 +624,7 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
 
         let mut search_done = false;
         let mut slot_result: Option<usize> = None;
+        let mut found_duplicate = false;
         while !search_done {
             let block_page_id = self.get_nth_block_page_id(pool, address.block_page_num)?;
 
@@ -661,6 +645,14 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
                     let entries_iter = block_page.iter_entries(address.slot, s)?;
 
                     'entries: for (i, entry) in entries_iter.enumerate() {
+                        if let Some((k, v)) = entry.entry {
+                            if k == key && v == value {
+                                // Found this entry already in the table
+                                search_done = true;
+                                found_duplicate = true;
+                                break 'entries;
+                            }
+                        }
                         if !entry.occupied {
                             // Found the first empty slot at this key's hash
                             search_done = true;
@@ -692,7 +684,9 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
             pool.unpin_page(block_page_id, false)?;
         }
 
-        if let Some(_) = slot_result {
+        if found_duplicate {
+            Ok(HashTableInsertResult::DuplicateEntry)
+        } else if slot_result.is_some() {
             Ok(HashTableInsertResult::Inserted)
         } else {
             // TODO: double table size and try again
@@ -706,16 +700,75 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         key: KeyType,
         value: ValueType,
     ) -> Result<HashTableDeleteResult, HashTableError> {
-        if self
-            .get_addressed_values(pool, &key, None)?
-            .iter()
-            .find(|(_, v)| v == &value)
-            .is_none()
-        {
-            return Ok(HashTableDeleteResult::DidNotExist);
+        let hash = self.get_hash_from_key(pool, &key)?;
+
+        let table_size = self.size(pool)?;
+        let max_address = self.get_address_from_hash(table_size - 1)?;
+
+        let original_address = self.get_address_from_hash(hash)?;
+        let mut address = original_address;
+        let mut to_slot: Option<usize> = None;
+        let mut wrapped = false;
+
+        let num_block_pages = self.num_block_pages(pool)?;
+
+        let mut search_done = false;
+        let mut removed = false;
+        while !search_done {
+            let block_page_id = self.get_nth_block_page_id(pool, address.block_page_num)?;
+
+            {
+                let mut block_page = WritableHashTableBlockPage::<KeyType, ValueType>::new(
+                    pool.fetch_page_writable(block_page_id)?,
+                );
+                let s = match (
+                    to_slot,
+                    original_address.block_page_num == address.block_page_num,
+                ) {
+                    (None, true) => Some(original_address.slot),
+                    (None, false) => None,
+                    (Some(t), true) => Some(t.min(max_address.slot)),
+                    (Some(t), false) => Some(t),
+                };
+                {
+                    let entries_iter = block_page.iter_entries(address.slot, s)?;
+
+                    'entries: for (i, entry) in entries_iter.enumerate() {
+                        if let Some((k, v)) = entry.entry {
+                            if k == key && v == value {
+                                // Found a matching entry to delete
+                                search_done = true;
+                                let slot = address.slot + i;
+                                block_page.remove_slot(slot)?;
+                                removed = true;
+                                break 'entries;
+                            }
+                        }
+                    }
+                }
+
+                // We reached the end of the block page without finding an
+                // empty slot, so we need to continue searching in the next
+                // block page
+                address = EntryAddress {
+                    block_page_num: (address.block_page_num + 1) % num_block_pages,
+                    slot: 0,
+                };
+                if wrapped {
+                    search_done = true;
+                } else if address.block_page_num == original_address.block_page_num {
+                    to_slot = Some(original_address.slot);
+                    wrapped = true;
+                };
+            }
+            pool.unpin_page(block_page_id, false)?;
         }
 
-        todo!()
+        if removed {
+            Ok(HashTableDeleteResult::Deleted)
+        } else {
+            Ok(HashTableDeleteResult::DidNotExist)
+        }
     }
 }
 
@@ -724,7 +777,7 @@ mod tests {
     use crate::{
         dbms::{
             buffer::pool_manager::testing::create_testing_pool_manager,
-            storage::page::hash_table::hash_function::ConstHashFunction,
+            storage::page::hash_table::hash_function::{ConstHashFunction, XxHashFunction},
         },
         tuple, tuple_type,
     };

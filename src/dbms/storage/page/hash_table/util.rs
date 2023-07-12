@@ -13,7 +13,6 @@ pub enum PageLayoutError {
     BadValueSize(String),
 }
 
-#[allow(dead_code)]
 pub fn calculate_block_page_layout(entry_size: usize) -> Result<PageLayout, PageLayoutError> {
     if entry_size == 0 {
         return Err(PageLayoutError::BadValueSize(

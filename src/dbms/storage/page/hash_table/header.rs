@@ -1,5 +1,3 @@
-use std::slice::Iter;
-
 use crate::dbms::{
     buffer::types::{ReadOnlyPage, WritablePage},
     storage::page::PageError,
@@ -42,7 +40,7 @@ pub trait IHashTableHeaderPageRead<'a> {
         Self: Sized,
     {
         let mut next_ind = 0;
-        while let Some(_) = self.get_block_page_id(next_ind)? {
+        while self.get_block_page_id(next_ind)?.is_some() {
             next_ind += 1;
             if next_ind >= Self::capacity_slots() {
                 return Err(HashTableHeaderError::NoMoreCapacity);
@@ -694,13 +692,13 @@ mod tests {
     #[rstest]
     #[case(Some(5))]
     #[case(None)]
-    fn test_threaded_get_extension_page_id(#[case] ext_page_factor: Option<usize>) {
+    fn test_threaded_get_extension_page_id(#[case] ext_page_factor: Option<u32>) {
         let pool_manager = create_testing_pool_manager(100);
 
         {
             for i in 0..11 {
                 let ext_page_id = match ext_page_factor {
-                    Some(f) => Some(i * 5),
+                    Some(f) => Some(i * f),
                     None => None,
                 };
 
@@ -721,7 +719,7 @@ mod tests {
         {
             for i in 0..11 {
                 let ext_page_id = match ext_page_factor {
-                    Some(f) => Some(i * 5),
+                    Some(f) => Some(i * f),
                     None => None,
                 };
 

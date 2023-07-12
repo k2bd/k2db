@@ -22,9 +22,9 @@ impl HashFunction for XxHashFunction {
     }
 }
 
-#[cfg(test)]
 /// A hash function that always returns the same value, for maximum
 /// collision.
+#[cfg(test)]
 pub struct ConstHashFunction {
     hash_val: u64,
 }

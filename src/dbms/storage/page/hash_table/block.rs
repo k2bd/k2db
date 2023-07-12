@@ -107,7 +107,7 @@ impl<'a, 'b, KeyType: BytesSerialize, ValueType: BytesSerialize>
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct EntryIteratorValue<KeyType: BytesSerialize, ValueType: BytesSerialize> {
     pub entry: Option<(KeyType, ValueType)>,
     pub occupied: bool,
@@ -160,7 +160,6 @@ pub struct ReadOnlyHashTableBlockPage<'a, KeyType: BytesSerialize, ValueType: By
 impl<'a, KeyType: BytesSerialize, ValueType: BytesSerialize>
     ReadOnlyHashTableBlockPage<'a, KeyType, ValueType>
 {
-    #[allow(dead_code)]
     pub fn new(page: ReadOnlyPage<'a>) -> Self {
         let layout =
             calculate_block_page_layout(KeyType::serialized_size() + ValueType::serialized_size())

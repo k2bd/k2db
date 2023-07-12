@@ -35,7 +35,7 @@ pub trait IHashTableHeaderExtensionPageRead<'a> {
         Self: Sized,
     {
         let mut next_ind = 0;
-        while let Some(_) = self.get_block_page_id(next_ind)? {
+        while self.get_block_page_id(next_ind)?.is_some() {
             next_ind += 1;
             if next_ind >= Self::capacity_slots() {
                 return Err(HashTableHeaderExtensionError::NoMoreCapacity);
