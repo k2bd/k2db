@@ -1,8 +1,9 @@
 use crate::dbms::types::{PageData, PageId};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DiskManagerError {
     PageNotFound,
+    PageIdOverflow,
 }
 
 pub trait IDiskManager {

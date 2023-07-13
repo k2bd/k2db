@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::dbms::types::{PageData, PageId, PAGE_SIZE};
+use crate::dbms::types::{PageData, PageId, NULL_PAGE_ID, PAGE_SIZE};
 
 use super::{DiskManagerError, IDiskManager};
 
@@ -54,6 +54,10 @@ impl IDiskManager for InMemoryDiskManager {
     }
 
     fn allocate_page(&mut self) -> Result<PageId, DiskManagerError> {
+        if self.next_page_id == NULL_PAGE_ID {
+            return Err(DiskManagerError::PageIdOverflow);
+        }
+
         let page_id = self.next_page_id;
         self.next_page_id += 1;
         self.pages.insert(page_id, vec![0u8; PAGE_SIZE]);
@@ -116,6 +120,22 @@ mod tests {
         let page_id = disk_manager.allocate_page().unwrap();
         assert_eq!(page_id, 1);
         assert_eq!(disk_manager.pages.len(), 2);
+    }
+
+    #[rstest]
+    fn test_allocate_page_overflow() {
+        let mut disk_manager = InMemoryDiskManager {
+            next_page_id: NULL_PAGE_ID - 1,
+            ..InMemoryDiskManager::new()
+        };
+        let page_id = disk_manager.allocate_page().unwrap();
+        assert_eq!(page_id, NULL_PAGE_ID - 1);
+        assert_eq!(disk_manager.pages.len(), 1);
+
+        let allocate_res = disk_manager.allocate_page();
+        assert!(allocate_res.is_err());
+        assert_eq!(allocate_res, Err(DiskManagerError::PageIdOverflow));
+        assert_eq!(disk_manager.pages.len(), 1);
     }
 
     #[rstest]

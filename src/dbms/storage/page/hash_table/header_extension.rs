@@ -323,7 +323,7 @@ mod tests {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
 
-        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+        let mut ext_page = WritableHashTableHeaderExtensionPage::new(page);
 
         ext_page.set_header_page_id(123).unwrap();
 
@@ -340,7 +340,7 @@ mod tests {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
 
-        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+        let mut ext_page = WritableHashTableHeaderExtensionPage::new(page);
 
         ext_page.set_previous_extension_page_id(Some(999)).unwrap();
 
@@ -361,7 +361,7 @@ mod tests {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
 
-        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+        let mut ext_page = WritableHashTableHeaderExtensionPage::new(page);
 
         ext_page.set_next_extension_page_id(Some(999)).unwrap();
 
@@ -378,7 +378,7 @@ mod tests {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
 
-        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+        let mut ext_page = WritableHashTableHeaderExtensionPage::new(page);
 
         ext_page.set_block_page_id(100, Some(999)).unwrap();
 
@@ -400,7 +400,7 @@ mod tests {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
 
-        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+        let mut ext_page = WritableHashTableHeaderExtensionPage::new(page);
 
         ext_page
             .initialize(999, prev_ext_page_id, next_ext_page_id)
@@ -423,7 +423,7 @@ mod tests {
         let pool_manager = create_testing_pool_manager(100);
         let page = pool_manager.new_page().unwrap();
 
-        let mut ext_page = WritableHashTableHeaderExtensionPage { page };
+        let mut ext_page = WritableHashTableHeaderExtensionPage::new(page);
 
         ext_page.initialize(999, None, None).unwrap();
         ext_page.set_block_page_id(100, Some(123)).unwrap();
@@ -466,7 +466,7 @@ mod tests {
                 write_threads.push(std::thread::spawn(move || {
                     {
                         let page = bpm.fetch_page_writable(i).unwrap();
-                        let mut writer = WritableHashTableHeaderExtensionPage { page };
+                        let mut writer = WritableHashTableHeaderExtensionPage::new(page);
 
                         writer
                             .initialize(i, prev_ext_page_id, next_ext_page_id)
@@ -494,7 +494,7 @@ mod tests {
                 read_threads.push(std::thread::spawn(move || {
                     {
                         let page = bpm.fetch_page(i).unwrap();
-                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+                        let reader = ReadOnlyHashTableHeaderExtensionPage::new(page);
 
                         assert_eq!(reader.get_header_page_id().unwrap(), i);
                     }
@@ -504,7 +504,7 @@ mod tests {
                 read_threads.push(std::thread::spawn(move || {
                     {
                         let page = bpm.fetch_page(i).unwrap();
-                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+                        let reader = ReadOnlyHashTableHeaderExtensionPage::new(page);
 
                         assert_eq!(
                             reader.get_previous_extension_page_id().unwrap(),
@@ -517,7 +517,7 @@ mod tests {
                 read_threads.push(std::thread::spawn(move || {
                     {
                         let page = bpm.fetch_page(i).unwrap();
-                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+                        let reader = ReadOnlyHashTableHeaderExtensionPage::new(page);
 
                         assert_eq!(
                             reader.get_next_extension_page_id().unwrap(),
@@ -530,7 +530,7 @@ mod tests {
                 read_threads.push(std::thread::spawn(move || {
                     {
                         let page = bpm.fetch_page(i).unwrap();
-                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+                        let reader = ReadOnlyHashTableHeaderExtensionPage::new(page);
 
                         assert_eq!(reader.get_block_page_id(100).unwrap(), Some(i * 3));
                     }
@@ -540,7 +540,7 @@ mod tests {
                 read_threads.push(std::thread::spawn(move || {
                     {
                         let page = bpm.fetch_page(i).unwrap();
-                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+                        let reader = ReadOnlyHashTableHeaderExtensionPage::new(page);
 
                         assert_eq!(reader.get_block_page_id(101).unwrap(), None);
                     }
@@ -550,7 +550,7 @@ mod tests {
                 read_threads.push(std::thread::spawn(move || {
                     {
                         let page = bpm.fetch_page(i).unwrap();
-                        let reader = ReadOnlyHashTableHeaderExtensionPage { page };
+                        let reader = ReadOnlyHashTableHeaderExtensionPage::new(page);
 
                         let mut iter = reader.iter_block_page_ids();
                         let mut block_page_ids = Vec::new();
