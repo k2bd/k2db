@@ -871,10 +871,27 @@ mod tests {
         },
         tuple, tuple_type,
     };
+    use paste;
     use std::time::Duration;
 
     use super::*;
     use rstest::*;
+
+    macro_rules! test_with_hash_fns {
+        ($test_fn:ident) => {
+            paste::item! {
+                #[test]
+                fn [< $test_fn _xx_hash >]() {
+                    $test_fn::<XxHashFunction>();
+                }
+
+                #[test]
+                fn [< $test_fn _const_hash >]() {
+                    $test_fn::<ConstHashFunction>();
+                }
+            }
+        };
+    }
 
     #[rstest]
     #[timeout(Duration::from_secs(10))]
@@ -892,14 +909,13 @@ mod tests {
         .unwrap();
     }
 
-    #[rstest]
-    fn test_add_and_get_hash_table_value_xxhash() {
+    fn test_add_and_get_hash_table_value<T: HashFunction>() {
         let mut pool_manager = create_testing_pool_manager(100);
 
         let mut table = LinearProbingHashTable::<
             tuple_type![u32, bool],
             tuple_type![f64, u32, bool],
-            XxHashFunction,
+            T,
         >::create(&mut pool_manager, 1000)
         .unwrap();
 
@@ -913,31 +929,9 @@ mod tests {
             .unwrap();
         assert_eq!(get_result, Some(tuple![1.0, 1, true]));
     }
+    test_with_hash_fns!(test_add_and_get_hash_table_value);
 
-    #[rstest]
-    fn test_add_and_get_hash_table_value_const_hash() {
-        let mut pool_manager = create_testing_pool_manager(100);
-
-        let mut table = LinearProbingHashTable::<
-            tuple_type![u32, bool],
-            tuple_type![f64, u32, bool],
-            ConstHashFunction,
-        >::create(&mut pool_manager, 1000)
-        .unwrap();
-
-        let insert_result = table
-            .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
-            .unwrap();
-        assert_eq!(insert_result, HashTableInsertResult::Inserted);
-
-        let get_result = table
-            .get_single_value(&pool_manager, tuple![1, true])
-            .unwrap();
-        assert_eq!(get_result, Some(tuple![1.0, 1, true]));
-    }
-
-    #[rstest]
-    fn test_add_and_get_hash_table_values_xxhash() {
+    fn test_add_and_get_hash_table_values<T: HashFunction>() {
         let mut pool_manager = create_testing_pool_manager(100);
 
         let mut table = LinearProbingHashTable::<
@@ -973,53 +967,15 @@ mod tests {
             .unwrap();
         assert_eq!(get_result, Some(tuple![3.2, 3, true]));
     }
+    test_with_hash_fns!(test_add_and_get_hash_table_values);
 
-    #[rstest]
-    fn test_add_and_get_hash_table_values_const_hash() {
+    fn test_adding_many_values_increases_table_size<T: HashFunction>() {
         let mut pool_manager = create_testing_pool_manager(100);
 
         let mut table = LinearProbingHashTable::<
             tuple_type![u32, bool],
             tuple_type![f64, u32, bool],
-            ConstHashFunction,
-        >::create(&mut pool_manager, 1000)
-        .unwrap();
-
-        let insert_result = table
-            .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
-            .unwrap();
-        assert_eq!(insert_result, HashTableInsertResult::Inserted);
-        let insert_result = table
-            .insert_entry(&mut pool_manager, tuple![2, false], tuple![2.1, 2, true])
-            .unwrap();
-        assert_eq!(insert_result, HashTableInsertResult::Inserted);
-        let insert_result = table
-            .insert_entry(&mut pool_manager, tuple![3, true], tuple![3.2, 3, true])
-            .unwrap();
-        assert_eq!(insert_result, HashTableInsertResult::Inserted);
-
-        let get_result = table
-            .get_single_value(&pool_manager, tuple![1, true])
-            .unwrap();
-        assert_eq!(get_result, Some(tuple![1.0, 1, true]));
-        let get_result = table
-            .get_single_value(&pool_manager, tuple![2, false])
-            .unwrap();
-        assert_eq!(get_result, Some(tuple![2.1, 2, true]));
-        let get_result = table
-            .get_single_value(&pool_manager, tuple![3, true])
-            .unwrap();
-        assert_eq!(get_result, Some(tuple![3.2, 3, true]));
-    }
-
-    #[rstest]
-    fn test_adding_many_values_increases_table_size() {
-        let mut pool_manager = create_testing_pool_manager(100);
-
-        let mut table = LinearProbingHashTable::<
-            tuple_type![u32, bool],
-            tuple_type![f64, u32, bool],
-            XxHashFunction,
+            T,
         >::create(&mut pool_manager, 100)
         .unwrap();
 
@@ -1043,4 +999,182 @@ mod tests {
             assert_eq!(get_result, Some(tuple![i as f64, i, true]));
         }
     }
+    test_with_hash_fns!(test_adding_many_values_increases_table_size);
+
+    fn test_remove_entries<T: HashFunction>() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            T,
+        >::create(&mut pool_manager, 100)
+        .unwrap();
+
+        for i in 0..1000 {
+            let insert_result = table
+                .insert_entry(
+                    &mut pool_manager,
+                    tuple![i, true],
+                    tuple![i as f64, i, true],
+                )
+                .unwrap();
+            assert_eq!(insert_result, HashTableInsertResult::Inserted);
+        }
+
+        for i in 0..500 {
+            let remove_result = table
+                .delete_entry(
+                    &mut pool_manager,
+                    tuple![i * 2, true],
+                    tuple![(i * 2) as f64, i * 2, true],
+                )
+                .unwrap();
+            assert_eq!(remove_result, HashTableDeleteResult::Deleted);
+        }
+
+        for i in 0..500 {
+            let get_result = table
+                .get_single_value(&pool_manager, tuple![i * 2, true])
+                .unwrap();
+            assert_eq!(get_result, None);
+            let get_result = table
+                .get_single_value(&pool_manager, tuple![i * 2 + 1, true])
+                .unwrap();
+            assert_eq!(
+                get_result,
+                Some(tuple![(i * 2 + 1) as f64, i * 2 + 1, true])
+            );
+        }
+    }
+    test_with_hash_fns!(test_remove_entries);
+
+    fn test_remove_entry_does_not_exist<T: HashFunction>() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            T,
+        >::create(&mut pool_manager, 100)
+        .unwrap();
+
+        assert_eq!(
+            table
+                .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
+                .unwrap(),
+            HashTableInsertResult::Inserted
+        );
+
+        assert_eq!(
+            table
+                .delete_entry(&mut pool_manager, tuple![2, true], tuple![2.0, 2, true])
+                .unwrap(),
+            HashTableDeleteResult::DidNotExist
+        );
+
+        assert_eq!(
+            table
+                .get_single_value(&mut pool_manager, tuple![1, true])
+                .unwrap(),
+            Some(tuple![1.0, 1, true])
+        );
+
+        assert_eq!(
+            table
+                .get_single_value(&mut pool_manager, tuple![2, true])
+                .unwrap(),
+            None
+        );
+    }
+    test_with_hash_fns!(test_remove_entry_does_not_exist);
+
+    fn test_key_with_multiple_values<T: HashFunction>() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            T,
+        >::create(&mut pool_manager, 100)
+        .unwrap();
+
+        assert_eq!(
+            table
+                .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
+                .unwrap(),
+            HashTableInsertResult::Inserted
+        );
+        assert_eq!(
+            table
+                .insert_entry(&mut pool_manager, tuple![1, true], tuple![2.0, 2, true])
+                .unwrap(),
+            HashTableInsertResult::Inserted
+        );
+        assert_eq!(
+            table
+                .insert_entry(&mut pool_manager, tuple![1, true], tuple![3.0, 3, false])
+                .unwrap(),
+            HashTableInsertResult::Inserted
+        );
+
+        assert_eq!(
+            table
+                .get_all_values(&mut pool_manager, tuple![1, true])
+                .unwrap(),
+            vec![
+                tuple![1.0, 1, true],
+                tuple![2.0, 2, true],
+                tuple![3.0, 3, false]
+            ]
+        );
+
+        assert_eq!(
+            table
+                .delete_entry(&mut pool_manager, tuple![1, true], tuple![2.0, 2, true])
+                .unwrap(),
+            HashTableDeleteResult::Deleted
+        );
+
+        assert_eq!(
+            table
+                .get_all_values(&mut pool_manager, tuple![1, true])
+                .unwrap(),
+            vec![tuple![1.0, 1, true], tuple![3.0, 3, false]]
+        );
+    }
+    test_with_hash_fns!(test_key_with_multiple_values);
+
+    fn test_insert_duplicate_value<T: HashFunction>() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            T,
+        >::create(&mut pool_manager, 100)
+        .unwrap();
+
+        assert_eq!(
+            table
+                .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
+                .unwrap(),
+            HashTableInsertResult::Inserted
+        );
+
+        assert_eq!(
+            table
+                .insert_entry(&mut pool_manager, tuple![1, true], tuple![1.0, 1, true])
+                .unwrap(),
+            HashTableInsertResult::DuplicateEntry
+        );
+
+        assert_eq!(
+            table
+                .get_all_values(&mut pool_manager, tuple![1, true])
+                .unwrap(),
+            vec![tuple![1.0, 1, true]]
+        );
+    }
+    test_with_hash_fns!(test_insert_duplicate_value);
 }
