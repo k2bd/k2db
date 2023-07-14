@@ -416,9 +416,98 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         }
     }
 
-    #[allow(dead_code)]
-    fn double_table_size(&self) {
-        todo!()
+    fn double_table_size(
+        &mut self,
+        pool: &mut impl IBufferPoolManager,
+    ) -> Result<(), HashTableError> {
+        let tmp_header_page_id;
+        let new_hash_seed;
+        {
+            let mut tmp_hash_table = Self::create(pool, (self.size(pool)? * 2) as u32)?;
+            tmp_header_page_id = tmp_hash_table.header_page_id;
+            new_hash_seed = tmp_hash_table.hash_seed;
+
+            let mut all_block_page_ids = Vec::<PageId>::new();
+            let mut next_extension_page_id: Option<PageId>;
+            {
+                let header_page =
+                    ReadOnlyHashTableHeaderPage::new(pool.fetch_page(self.header_page_id)?);
+                all_block_page_ids.extend(header_page.iter_block_page_ids().collect::<Vec<_>>());
+                next_extension_page_id = header_page.get_extension_page_id()?;
+            }
+            pool.unpin_page(self.header_page_id, false)?;
+
+            while let Some(extension_page_id) = next_extension_page_id {
+                let extension_page;
+                {
+                    extension_page = ReadOnlyHashTableHeaderExtensionPage::new(
+                        pool.fetch_page(extension_page_id)?,
+                    );
+                    all_block_page_ids
+                        .extend(extension_page.iter_block_page_ids().collect::<Vec<_>>());
+                    next_extension_page_id = extension_page.get_next_extension_page_id()?;
+                }
+                pool.unpin_page(extension_page_id, false)?;
+            }
+
+            all_block_page_ids
+                .into_iter()
+                .try_for_each::<_, Result<_, HashTableError>>(|block_page_id| {
+                    let block_page_entries;
+                    {
+                        let block_page = ReadOnlyHashTableBlockPage::<KeyType, ValueType>::new(
+                            pool.fetch_page(block_page_id)?,
+                        );
+                        block_page_entries = block_page.iter_entries(0, None)?.collect::<Vec<_>>();
+                    }
+                    pool.unpin_page(block_page_id, false)?;
+
+                    block_page_entries
+                        .into_iter()
+                        .try_for_each::<_, Result<_, HashTableError>>(|entry| {
+                            if let Some((key, value)) = entry.entry {
+                                tmp_hash_table.insert_entry(pool, key, value)?;
+                            }
+                            Ok(())
+                        })?;
+
+                    Ok(())
+                })?;
+        }
+
+        {
+            let tmp_hash_table_header_page =
+                ReadOnlyHashTableHeaderPage::new(pool.fetch_page(tmp_header_page_id)?);
+            let tmp_hash_table_header_page_size = tmp_hash_table_header_page.get_size()?;
+            let tmp_hash_table_header_page_lsn = tmp_hash_table_header_page.get_lsn()?;
+            let tmp_hash_table_header_page_extension_page_id =
+                tmp_hash_table_header_page.get_extension_page_id()?;
+            let tmp_hash_table_header_page_block_page_ids =
+                tmp_hash_table_header_page.iter_block_page_ids();
+
+            let mut header_page =
+                WritableHashTableHeaderPage::new(pool.fetch_page_writable(self.header_page_id)?);
+            header_page.set_size(tmp_hash_table_header_page_size)?;
+            header_page.set_lsn(tmp_hash_table_header_page_lsn)?;
+            header_page.set_extension_page_id(tmp_hash_table_header_page_extension_page_id)?;
+            (0..WritableHashTableHeaderPage::capacity_slots())
+                .try_for_each::<_, Result<_, HashTableError>>(|i| {
+                    header_page.set_block_page_id(i, None)?;
+                    Ok(())
+                })?;
+            tmp_hash_table_header_page_block_page_ids
+                .into_iter()
+                .try_for_each::<_, Result<_, HashTableError>>(|block_page_id| {
+                    header_page.add_block_page_id(block_page_id)?;
+                    Ok(())
+                })?;
+        }
+        pool.unpin_page(tmp_header_page_id, false)?;
+        pool.unpin_page(self.header_page_id, true)?;
+
+        self.hash_seed = new_hash_seed;
+
+        Ok(())
     }
 
     fn size(&self, pool: &impl IBufferPoolManager) -> Result<usize, HashTableError> {
@@ -689,8 +778,9 @@ impl<KeyType: BytesSerialize, ValueType: BytesSerialize, HashFn: HashFunction>
         } else if slot_result.is_some() {
             Ok(HashTableInsertResult::Inserted)
         } else {
-            // TODO: double table size and try again
-            Err(HashTableError::NoSlotsInTable)
+            // Double the table size and try again
+            self.double_table_size(pool)?;
+            self.insert_entry(pool, key, value)
         }
     }
 
@@ -920,5 +1010,37 @@ mod tests {
             .get_single_value(&pool_manager, tuple![3, true])
             .unwrap();
         assert_eq!(get_result, Some(tuple![3.2, 3, true]));
+    }
+
+    #[rstest]
+    fn test_adding_many_values_increases_table_size() {
+        let mut pool_manager = create_testing_pool_manager(100);
+
+        let mut table = LinearProbingHashTable::<
+            tuple_type![u32, bool],
+            tuple_type![f64, u32, bool],
+            XxHashFunction,
+        >::create(&mut pool_manager, 100)
+        .unwrap();
+
+        for i in 0..1000 {
+            let insert_result = table
+                .insert_entry(
+                    &mut pool_manager,
+                    tuple![i, true],
+                    tuple![i as f64, i, true],
+                )
+                .unwrap();
+            assert_eq!(insert_result, HashTableInsertResult::Inserted);
+        }
+
+        assert_eq!(table.size(&pool_manager).unwrap(), 1600);
+
+        for i in 0..1000 {
+            let get_result = table
+                .get_single_value(&pool_manager, tuple![i, true])
+                .unwrap();
+            assert_eq!(get_result, Some(tuple![i as f64, i, true]));
+        }
     }
 }
